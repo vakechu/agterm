@@ -1,0 +1,191 @@
+import Foundation
+import Observation
+
+/// The whole app state: the workspace tree and the current selection.
+///
+/// `@Observable @MainActor` so SwiftUI views observe mutations and all model
+/// access is main-actor isolated (implicitly `Sendable` via isolation). Selection
+/// is a single `Session.ID?` — workspace rows are non-selectable disclosure
+/// headers, so one id is enough; the owning workspace is derived.
+@Observable
+@MainActor
+public final class AppStore {
+    public var workspaces: [Workspace]
+    public var selectedSessionID: UUID?
+
+    @ObservationIgnored private let persistence: PersistenceStore
+
+    public init(workspaces: [Workspace] = [], selectedSessionID: UUID? = nil, persistence: PersistenceStore = PersistenceStore()) {
+        self.workspaces = workspaces
+        self.selectedSessionID = selectedSessionID
+        self.persistence = persistence
+    }
+
+    /// The currently selected session, derived from `selectedSessionID`.
+    public var activeSession: Session? {
+        guard let selectedSessionID else { return nil }
+        return session(withID: selectedSessionID)
+    }
+
+    @discardableResult
+    public func addWorkspace(name: String) -> Workspace {
+        let workspace = Workspace(name: name)
+        workspaces.append(workspace)
+        save()
+        return workspace
+    }
+
+    /// Creates a session in the given workspace, appends it, and selects it.
+    /// Returns nil if no workspace matches.
+    @discardableResult
+    public func addSession(toWorkspace workspaceID: UUID, cwd: String) -> Session? {
+        guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return nil }
+        let session = Session(initialCwd: cwd)
+        workspaces[index].sessions.append(session)
+        selectedSessionID = session.id
+        save()
+        return session
+    }
+
+    /// Selects a session (or clears the selection when passed nil) and persists.
+    /// A non-nil id that matches no session is ignored, leaving the current
+    /// selection untouched; nil always deselects. Backs the sidebar's
+    /// `List(selection:)` so a click persists immediately rather than waiting for
+    /// the next structural mutation.
+    public func selectSession(_ sessionID: UUID?) {
+        if let sessionID, session(withID: sessionID) == nil { return }
+        selectedSessionID = sessionID
+        save()
+    }
+
+    /// Sets a session's custom name. An empty (or whitespace-only) name clears
+    /// `customName` to nil, reverting the row to the auto basename.
+    public func renameSession(_ sessionID: UUID, to name: String) {
+        guard let session = session(withID: sessionID) else { return }
+        session.customName = name.trimmedOrNil
+        save()
+    }
+
+    /// Renames a workspace. An empty (or whitespace-only) name is ignored —
+    /// workspaces have no auto fallback, so a blank name is rejected.
+    public func renameWorkspace(_ workspaceID: UUID, to name: String) {
+        guard let trimmed = name.trimmedOrNil, let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        workspaces[index].name = trimmed
+        save()
+    }
+
+    /// Removes a session, tears down its surface, and — if it was the active
+    /// session — reselects a neighbor (next in the same workspace, else the
+    /// previous, else any remaining session, else nil).
+    public func closeSession(_ sessionID: UUID) {
+        guard let location = location(ofSession: sessionID) else { return }
+        let wasActive = selectedSessionID == sessionID
+        let removed = workspaces[location.workspaceIndex].sessions.remove(at: location.sessionIndex)
+        removed.surface?.teardown()
+        if wasActive { selectedSessionID = reselectionTarget(after: location) }
+        save()
+    }
+
+    /// Moves a session to another workspace (or reorders within the same one),
+    /// keeping the **same** `Session` instance so its attached surface and live
+    /// shell survive. `index` is the destination position in the target's session
+    /// array **after** the move's removal (clamped to bounds); nil appends.
+    /// `selectedSessionID` is unaffected — the id is stable, so a moved active
+    /// session stays selected. No-ops if the session or target workspace is
+    /// unknown; a same-workspace move to the current slot leaves order unchanged.
+    public func moveSession(_ sessionID: UUID, toWorkspace targetID: UUID, at index: Int? = nil) {
+        guard let source = location(ofSession: sessionID) else { return }
+        guard let targetIndex = workspaces.firstIndex(where: { $0.id == targetID }) else { return }
+
+        let session = workspaces[source.workspaceIndex].sessions.remove(at: source.sessionIndex)
+        let destination = max(0, min(index ?? workspaces[targetIndex].sessions.count, workspaces[targetIndex].sessions.count))
+        workspaces[targetIndex].sessions.insert(session, at: destination)
+        save()
+    }
+
+    // MARK: - Persistence
+
+    /// Builds a `Snapshot` value of the current tree. Each session captures its
+    /// live `currentCwd` (or `initialCwd` if no PWD report has arrived). Runs on
+    /// `@MainActor`; the resulting value is `Sendable` and safe to hand to a writer.
+    public func snapshot() -> Snapshot {
+        let workspaceSnapshots = workspaces.map { workspace in
+            WorkspaceSnapshot(id: workspace.id, name: workspace.name, sessions: workspace.sessions.map { session in
+                SessionSnapshot(id: session.id, customName: session.customName, cwd: session.currentCwd ?? session.initialCwd)
+            })
+        }
+        return Snapshot(selectedSessionID: selectedSessionID, workspaces: workspaceSnapshots)
+    }
+
+    /// Rebuilds the tree from a snapshot: fresh `Session`s (surfaces and shells
+    /// spawn lazily on first display) keyed by the persisted ids so the restored
+    /// `selectedSessionID` still resolves. Replaces the current state wholesale.
+    ///
+    /// Deliberately does NOT call `save()`: it loads what was just read from disk,
+    /// so re-persisting it would be a pointless write (and the only mutator that
+    /// skips `save()` for that reason). If the persisted `selectedSessionID` points
+    /// at a session that no longer exists, it is cleared to keep selection valid.
+    public func restore(from snapshot: Snapshot) {
+        workspaces = snapshot.workspaces.map { workspaceSnapshot in
+            let sessions = workspaceSnapshot.sessions.map { sessionSnapshot in
+                Session(id: sessionSnapshot.id, initialCwd: sessionSnapshot.cwd, customName: sessionSnapshot.customName)
+            }
+            return Workspace(id: workspaceSnapshot.id, name: workspaceSnapshot.name, sessions: sessions)
+        }
+        if let id = snapshot.selectedSessionID, session(withID: id) == nil {
+            selectedSessionID = nil
+        } else {
+            selectedSessionID = snapshot.selectedSessionID
+        }
+    }
+
+    /// Persists the current state eagerly. Called after every mutation and on
+    /// terminate. A write failure is logged and swallowed — a transient disk error
+    /// must not bring down the model.
+    public func save() {
+        do {
+            try persistence.save(snapshot())
+        } catch {
+            log("save failed: \(error)")
+        }
+    }
+
+    private func log(_ message: @autoclosure () -> String) {
+        NSLog("agt: %@", message())
+    }
+
+    // MARK: - Derivation
+
+    /// The workspace that owns the given session, if any.
+    public func workspace(forSession sessionID: UUID) -> Workspace? {
+        guard let location = location(ofSession: sessionID) else { return nil }
+        return workspaces[location.workspaceIndex]
+    }
+
+    private func session(withID sessionID: UUID) -> Session? {
+        for workspace in workspaces {
+            if let session = workspace.sessions.first(where: { $0.id == sessionID }) { return session }
+        }
+        return nil
+    }
+
+    private func location(ofSession sessionID: UUID) -> (workspaceIndex: Int, sessionIndex: Int)? {
+        for (wi, workspace) in workspaces.enumerated() {
+            if let si = workspace.sessions.firstIndex(where: { $0.id == sessionID }) { return (wi, si) }
+        }
+        return nil
+    }
+
+    /// Picks the next selection after removing the session at `location`. Prefers
+    /// the session that shifted into the removed slot, then the previous one in
+    /// that workspace, then the first session of any remaining workspace.
+    private func reselectionTarget(after location: (workspaceIndex: Int, sessionIndex: Int)) -> UUID? {
+        let sessions = workspaces[location.workspaceIndex].sessions
+        if location.sessionIndex < sessions.count { return sessions[location.sessionIndex].id }
+        if location.sessionIndex > 0 { return sessions[location.sessionIndex - 1].id }
+        for workspace in workspaces {
+            if let first = workspace.sessions.first { return first.id }
+        }
+        return nil
+    }
+}
