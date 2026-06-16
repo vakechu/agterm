@@ -14,6 +14,18 @@ private final class SidebarCellView: NSTableCellView {
     let tokenField = NSTextField(labelWithString: "")
 }
 
+/// Row view that always reports itself emphasized. The sidebar never becomes first
+/// responder — clicking a session moves keyboard focus straight into the terminal
+/// surface — so without this the selected row would permanently draw in the
+/// unfocused source-list style (grey fill, dimmed text). Forcing emphasis keeps the
+/// active session marked with the accent fill and readable text.
+private final class SidebarRowView: NSTableRowView {
+    override var isEmphasized: Bool {
+        get { true }
+        set {}
+    }
+}
+
 /// A stable reference-type node fed to `NSOutlineView`. NSOutlineView keys item
 /// identity and expansion state by object identity (`===`), so the nodes must be
 /// the SAME instances across reloads — never freshly-allocated structs. The
@@ -290,6 +302,14 @@ struct WorkspaceSidebar: NSViewRepresentable {
         func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
             guard let node = item as? SidebarNode else { return false }
             return node.kind == .session
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+            let identifier = NSUserInterfaceItemIdentifier("sidebar-row")
+            if let reused = outlineView.makeView(withIdentifier: identifier, owner: self) as? SidebarRowView { return reused }
+            let view = SidebarRowView()
+            view.identifier = identifier
+            return view
         }
 
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
