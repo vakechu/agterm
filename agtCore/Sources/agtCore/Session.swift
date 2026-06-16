@@ -5,8 +5,9 @@ import Observation
 ///
 /// `@MainActor` (so it's implicitly `Sendable` via isolation — never made an
 /// `actor`). The `surface` slot is `@ObservationIgnored` so assigning the
-/// lazily-created NSView never churns observation; only `customName`/`currentCwd`
-/// are observed, so the sidebar refreshes when a rename or PWD report lands.
+/// lazily-created NSView never churns observation; `customName`/`currentCwd`/
+/// `gitStatus` are observed, so the sidebar refreshes when a rename, PWD report,
+/// or git-status update lands.
 @Observable
 @MainActor
 public final class Session: Identifiable {
@@ -19,6 +20,11 @@ public final class Session: Identifiable {
     /// changes since the last structural mutation.
     public var currentCwd: String?
     public let initialCwd: String
+
+    /// The latest git status for `currentCwd`, or nil when the cwd is not a git
+    /// work tree (or has not been refreshed yet). Set by the app's
+    /// `GitStatusService`. Observed, so the sidebar tokens and the title pill react.
+    public var gitStatus: GitStatus?
 
     /// The app-side surface (a `GhosttySurfaceView`). Lazily created on first
     /// display and owned here so it survives sidebar/detail view churn.
@@ -47,6 +53,13 @@ public final class Session: Identifiable {
         if path.isEmpty { return "~" }
         return (path as NSString).lastPathComponent
     }
+
+    /// The directory to inspect for git status: the live `currentCwd` once a PWD
+    /// report has arrived, otherwise the `initialCwd`. A freshly restored session
+    /// has no `currentCwd` until the interactive shell emits OSC 7, so refreshing
+    /// against this effective cwd surfaces git state immediately on launch/select
+    /// rather than waiting (timing-dependent) for the first PWD report.
+    public var effectiveCwd: String { currentCwd ?? initialCwd }
 }
 
 extension String {

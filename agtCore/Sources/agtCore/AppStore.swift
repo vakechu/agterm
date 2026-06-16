@@ -162,7 +162,8 @@ public final class AppStore {
         return workspaces[location.workspaceIndex]
     }
 
-    private func session(withID sessionID: UUID) -> Session? {
+    /// The session with the given id across all workspaces, if any.
+    public func session(withID sessionID: UUID) -> Session? {
         for workspace in workspaces {
             if let session = workspace.sessions.first(where: { $0.id == sessionID }) { return session }
         }
