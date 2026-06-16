@@ -13,11 +13,17 @@ public struct Snapshot: Codable, Equatable, Sendable {
     public var version: Int
     public var selectedSessionID: UUID?
     public var workspaces: [WorkspaceSnapshot]
+    /// Whether the bottom status bar is hidden. Optional so a pre-existing
+    /// `workspaces.json` written before this field decodes (as nil → shown)
+    /// instead of failing the whole load.
+    public var statusBarHidden: Bool?
 
-    public init(version: Int = Snapshot.currentVersion, selectedSessionID: UUID? = nil, workspaces: [WorkspaceSnapshot] = []) {
+    public init(version: Int = Snapshot.currentVersion, selectedSessionID: UUID? = nil,
+                workspaces: [WorkspaceSnapshot] = [], statusBarHidden: Bool? = nil) {
         self.version = version
         self.selectedSessionID = selectedSessionID
         self.workspaces = workspaces
+        self.statusBarHidden = statusBarHidden
     }
 }
 

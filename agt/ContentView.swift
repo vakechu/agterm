@@ -23,8 +23,10 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 detailPane
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Divider()
-                statusBar
+                if !store.statusBarHidden {
+                    Divider()
+                    statusBar
+                }
             }
         }
         // keep the system title bar showing the active session's name (NSWindow.title)

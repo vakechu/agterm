@@ -34,6 +34,16 @@ struct agtApp: App {
         }
         .defaultSize(width: 900, height: 600)
         .windowResizability(.contentMinSize)
+        .commands {
+            // standard View > Hide/Show Status Bar item, toggling the bottom status
+            // bar. the choice is persisted via the store so it survives relaunch.
+            CommandGroup(after: .toolbar) {
+                Button(store.statusBarHidden ? "Show Status Bar" : "Hide Status Bar") {
+                    store.setStatusBarHidden(!store.statusBarHidden)
+                }
+                .keyboardShortcut("/", modifiers: .command)
+            }
+        }
     }
 
     /// Loads the persisted snapshot and restores it; if there's nothing saved,

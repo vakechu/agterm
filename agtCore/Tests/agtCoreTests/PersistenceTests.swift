@@ -132,6 +132,29 @@ final class PersistenceTests {
         #expect(restored.snapshot() == snapshot)
     }
 
+    @Test func statusBarHiddenPersistsAndRestores() {
+        let app = AppStore(persistence: store)
+        app.addWorkspace(name: "work")
+        #expect(app.statusBarHidden == false)
+        app.setStatusBarHidden(true)
+        #expect(store.load().statusBarHidden == true)
+
+        let restored = AppStore(persistence: store)
+        restored.restore(from: store.load())
+        #expect(restored.statusBarHidden == true)
+    }
+
+    @Test func legacyFileWithoutStatusBarFlagLoadsAndKeepsWorkspaces() throws {
+        // a workspaces.json written before statusBarHidden existed: the key is absent.
+        // it must still decode (flag nil -> shown), not fail the load and wipe the tree.
+        let id = UUID()
+        let json = #"{ "version": 1, "workspaces": [ { "id": "\#(id.uuidString)", "name": "work", "sessions": [] } ] }"#
+        try Data(json.utf8).write(to: fileURL)
+        let loaded = store.load()
+        #expect(loaded.workspaces.map(\.id) == [id])
+        #expect(loaded.statusBarHidden == nil)
+    }
+
     @Test func selectSessionPersistsSelectionToDisk() {
         let app = AppStore(persistence: store)
         let work = app.addWorkspace(name: "work")
