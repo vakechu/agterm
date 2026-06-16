@@ -71,6 +71,12 @@ final class GhosttyApp {
     private func loadConfig() -> ghostty_config_t? {
         guard let cfg = ghostty_config_new() else { return nil }
 
+        // app's built-in defaults (terminal padding, etc.), loaded first so a
+        // user's ~/.config/ghostty/config still overrides them.
+        if let defaults = Bundle.main.url(forResource: "ghostty-defaults", withExtension: "conf") {
+            defaults.path.withCString { ghostty_config_load_file(cfg, $0) }
+        }
+
         // libghostty does NOT read the user's XDG config on its own, so we load
         // it explicitly when present, then resolve any `config-file` includes,
         // then finalize.
