@@ -125,6 +125,34 @@ public final class AppStore {
         save()
     }
 
+    /// Whether a workspace may be removed: one workspace is always kept, so removal is
+    /// allowed only when more than one exists.
+    public var canRemoveWorkspace: Bool { workspaces.count > 1 }
+
+    /// Removes a workspace and every session in it, tearing down each session's surfaces
+    /// and pruning them from the recency stack. No-ops unless more than one workspace
+    /// exists (the last one is kept). If the active session lived in the removed
+    /// workspace, reselects the first session of a remaining workspace (the one that
+    /// shifted into the removed slot, else the first non-empty workspace), or nil when
+    /// no sessions remain.
+    public func removeWorkspace(_ workspaceID: UUID) {
+        guard canRemoveWorkspace, let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        let removingActive = selectedSessionID.map { id in workspaces[index].sessions.contains { $0.id == id } } ?? false
+        for session in workspaces[index].sessions {
+            session.surface?.teardown()
+            session.splitSurface?.teardown()
+            sessionRecency.remove(session.id)
+        }
+        workspaces.remove(at: index)
+        if removingActive {
+            let fallbackIndex = min(index, workspaces.count - 1)
+            selectedSessionID = workspaces[fallbackIndex].sessions.first?.id
+                ?? workspaces.first(where: { !$0.sessions.isEmpty })?.sessions.first?.id
+            recordRecency()
+        }
+        save()
+    }
+
     /// Toggles the one-level split for a session. The second pane's surface is created
     /// lazily by the detail pane on first show and kept alive when hidden, so this only
     /// flips the flag. The flag is persisted, so the split is restored on relaunch.

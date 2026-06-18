@@ -128,6 +128,29 @@ final class SidebarUITests: XCTestCase {
                       "session should move to workspace 2 via drag-and-drop")
     }
 
+    func testDeleteWorkspace() throws {
+        XCTAssertTrue(app.staticTexts["workspace 1"].waitForExistence(timeout: 20), "seeded workspace should exist")
+        XCTAssertTrue(sessionRow().waitForExistence(timeout: 5), "seeded session should exist")
+
+        // a second workspace is needed: the last remaining one can't be deleted.
+        app.typeKey("n", modifierFlags: [.command, .shift])
+        XCTAssertTrue(app.staticTexts["workspace 2"].waitForExistence(timeout: 5), "New Workspace should add workspace 2")
+
+        // delete workspace 1 — it still holds the seeded session, so a confirm alert appears.
+        app.staticTexts["workspace 1"].rightClick()
+        let delete = presentedMenuItem("Delete Workspace")
+        XCTAssertTrue(delete.waitForExistence(timeout: 5), "Delete Workspace menu item should appear")
+        delete.click()
+        // the confirm alert is an app-modal dialog; scope the Delete button to it (menu-bar items
+        // also surface in the app-wide button query).
+        let alert = app.dialogs.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "a non-empty workspace should prompt to confirm")
+        alert.buttons["Delete"].firstMatch.click()
+
+        XCTAssertTrue(app.staticTexts["workspace 1"].waitForNonExistence(timeout: 5), "workspace 1 should be gone")
+        XCTAssertTrue(pollWorkspaceNames(["workspace 2"], timeout: 5), "only workspace 2 should remain")
+    }
+
     func testRowsShowKindIcons() throws {
         XCTAssertTrue(sessionRow().waitForExistence(timeout: 20), "seeded session should exist")
         // the leading row icons (folder for a workspace, terminal for a session) carry stable
@@ -167,6 +190,22 @@ final class SidebarUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Cancel"].firstMatch.waitForExistence(timeout: 5),
                       "Open Directory… should present a folder picker")
         app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+    }
+
+    /// Polls the hermetic snapshot file until the workspace names equal `expected`, in order.
+    private func pollWorkspaceNames(_ expected: [String], timeout: TimeInterval) -> Bool {
+        let file = stateDir.appendingPathComponent("workspaces.json")
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: file),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let workspaces = obj["workspaces"] as? [[String: Any]],
+               workspaces.compactMap({ $0["name"] as? String }) == expected {
+                return true
+            }
+            usleep(200_000)
+        }
+        return false
     }
 
     /// Polls the hermetic snapshot file until the named workspace has `expected` sessions.

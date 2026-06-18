@@ -77,6 +77,8 @@ struct agtApp: App {
                     .disabled(store.activeSession == nil)
                 Button("Rename Workspace") { actions.renameActiveWorkspace() }
                     .disabled(store.currentWorkspaceID == nil)
+                Button("Delete Workspace") { actions.deleteActiveWorkspace() }
+                    .disabled(!store.canRemoveWorkspace)
                 Button("Close Session") {
                     if store.activeSession != nil { actions.closeActiveSession() }
                     else { NSApp.keyWindow?.performClose(nil) }

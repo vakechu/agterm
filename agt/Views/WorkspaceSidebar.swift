@@ -57,8 +57,9 @@ private final class SidebarNode {
 /// or the "Rename" context menu. Context menus per row drive the store API.
 struct WorkspaceSidebar: NSViewRepresentable {
     @Bindable var store: AppStore
+    let actions: AppActions
 
-    func makeCoordinator() -> Coordinator { Coordinator(store: store) }
+    func makeCoordinator() -> Coordinator { Coordinator(store: store, actions: actions) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let outline = SidebarOutlineView()
@@ -121,6 +122,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate {
         private let store: AppStore
+        private let actions: AppActions
         weak var outlineView: NSOutlineView?
 
         /// Root workspace nodes in store order. Rebuilt (in place, reusing cached
@@ -148,8 +150,9 @@ struct WorkspaceSidebar: NSViewRepresentable {
         /// subscript, so a never-seen session and one last seen as nil compare equal.
         private var lastSeenGitStatus: [UUID: GitStatus] = [:]
 
-        init(store: AppStore) {
+        init(store: AppStore, actions: AppActions) {
             self.store = store
+            self.actions = actions
             super.init()
             // the menu/palette can't reach the inline editor directly, so they post a
             // notification and this coordinator starts the edit on the selected row.
@@ -565,6 +568,9 @@ struct WorkspaceSidebar: NSViewRepresentable {
         func menu(forRow row: Int) -> NSMenu? {
             guard let outline = outlineView, row >= 0, let node = outline.item(atRow: row) as? SidebarNode else { return nil }
             let menu = NSMenu()
+            // manage enabled state explicitly (the Delete item is disabled at the last workspace)
+            // rather than via the responder-chain auto-enabling.
+            menu.autoenablesItems = false
 
             let rename = NSMenuItem(title: "Rename", action: #selector(menuRename(_:)), keyEquivalent: "")
             rename.target = self
@@ -599,6 +605,12 @@ struct WorkspaceSidebar: NSViewRepresentable {
                 openSession.target = self
                 openSession.representedObject = node
                 menu.addItem(openSession)
+                menu.addItem(.separator())
+                let delete = NSMenuItem(title: "Delete Workspace", action: #selector(menuDeleteWorkspace(_:)), keyEquivalent: "")
+                delete.target = self
+                delete.representedObject = node
+                delete.isEnabled = store.canRemoveWorkspace
+                menu.addItem(delete)
             }
             return menu
         }
@@ -635,6 +647,11 @@ struct WorkspaceSidebar: NSViewRepresentable {
         @objc private func menuNewSession(_ sender: NSMenuItem) {
             guard let node = sender.representedObject as? SidebarNode else { return }
             addSession(toWorkspace: node.id, cwd: FileManager.default.homeDirectoryForCurrentUser.path)
+        }
+
+        @objc private func menuDeleteWorkspace(_ sender: NSMenuItem) {
+            guard let node = sender.representedObject as? SidebarNode else { return }
+            actions.deleteWorkspace(node.id)
         }
 
         /// "Open Directory…": pick a folder and add a session rooted there.

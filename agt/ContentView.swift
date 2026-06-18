@@ -25,7 +25,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            WorkspaceSidebar(store: store)
+            WorkspaceSidebar(store: store, actions: actions)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220)
                 .safeAreaInset(edge: .bottom) { bottomBar }
         } detail: {

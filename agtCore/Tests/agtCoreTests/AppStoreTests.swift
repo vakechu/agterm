@@ -170,6 +170,50 @@ struct AppStoreTests {
         #expect(split.teardownCount == 1)
     }
 
+    @Test func removeWorkspaceTearsDownSessionsAndPrunesRecency() {
+        let store = Self.makeStore()
+        let keep = store.addWorkspace(name: "keep")
+        let doomed = store.addWorkspace(name: "doomed")
+        let session = store.addSession(toWorkspace: doomed.id, cwd: "/a")!
+        let surface = SpySurface(); session.surface = surface
+        let split = SpySurface(); session.splitSurface = split
+        store.removeWorkspace(doomed.id)
+        #expect(store.workspaces.map(\.id) == [keep.id])
+        #expect(surface.teardownCount == 1)
+        #expect(split.teardownCount == 1)
+        #expect(!store.sessionRecency.items.contains(session.id))
+    }
+
+    @Test func removeWorkspaceReselectsWhenActiveInside() {
+        let store = Self.makeStore()
+        let keep = store.addWorkspace(name: "keep")
+        let kept = store.addSession(toWorkspace: keep.id, cwd: "/k")!
+        let doomed = store.addWorkspace(name: "doomed")
+        let active = store.addSession(toWorkspace: doomed.id, cwd: "/a")!
+        store.selectSession(active.id)
+        store.removeWorkspace(doomed.id)
+        #expect(store.selectedSessionID == kept.id)
+    }
+
+    @Test func removeWorkspaceLeavesSelectionWhenActiveElsewhere() {
+        let store = Self.makeStore()
+        let keep = store.addWorkspace(name: "keep")
+        let active = store.addSession(toWorkspace: keep.id, cwd: "/k")!
+        let doomed = store.addWorkspace(name: "doomed")
+        _ = store.addSession(toWorkspace: doomed.id, cwd: "/d")!
+        store.selectSession(active.id)
+        store.removeWorkspace(doomed.id)
+        #expect(store.selectedSessionID == active.id)
+    }
+
+    @Test func removeWorkspaceKeepsAtLeastOne() {
+        let store = Self.makeStore()
+        let only = store.addWorkspace(name: "only")
+        #expect(store.canRemoveWorkspace == false)
+        store.removeWorkspace(only.id)
+        #expect(store.workspaces.map(\.id) == [only.id])
+    }
+
     @Test func toggleSplitFlipsFlag() {
         let store = Self.makeStore()
         let ws = store.addWorkspace(name: "work")

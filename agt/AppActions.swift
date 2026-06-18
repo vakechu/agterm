@@ -57,6 +57,36 @@ final class AppActions {
         store.setStatusBarHidden(!store.statusBarHidden)
     }
 
+    /// Delete a workspace and all of its sessions. Confirms first when the workspace still has
+    /// sessions (the delete ends their shells); an empty workspace deletes without a prompt.
+    /// No-ops when only one workspace remains — one is always kept.
+    func deleteWorkspace(_ workspaceID: UUID) {
+        guard store.canRemoveWorkspace,
+              let workspace = store.workspaces.first(where: { $0.id == workspaceID }) else { return }
+        if !workspace.sessions.isEmpty, !confirmDeleteWorkspace(workspace) { return }
+        store.removeWorkspace(workspaceID)
+    }
+
+    /// Delete the current workspace (the one new sessions land in) — used by the menu bar and the
+    /// action palette, which have no clicked row.
+    func deleteActiveWorkspace() {
+        guard let id = store.currentWorkspaceID else { return }
+        deleteWorkspace(id)
+    }
+
+    private func confirmDeleteWorkspace(_ workspace: Workspace) -> Bool {
+        let count = workspace.sessions.count
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete “\(workspace.name)”?"
+        alert.informativeText = count == 1
+            ? "This closes its session and ends the running shell."
+            : "This closes \(count) sessions and ends their running shells."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     /// Move a session to another workspace (used by the palette's "Move Session to …" items).
     func moveSession(_ sessionID: UUID, toWorkspace workspaceID: UUID) {
         store.moveSession(sessionID, toWorkspace: workspaceID)
@@ -101,6 +131,9 @@ final class AppActions {
             PaletteItem(title: "Actual Font Size") { [weak self] in self?.resetFontSize() },
             PaletteItem(title: "Toggle Status Bar") { [weak self] in self?.toggleStatusBar() },
         ]
+        if store.canRemoveWorkspace {
+            items.append(PaletteItem(title: "Delete Workspace") { [weak self] in self?.deleteActiveWorkspace() })
+        }
         if let current = store.currentWorkspaceID, let sessionID = store.selectedSessionID {
             for workspace in store.workspaces where workspace.id != current {
                 let target = workspace.id
