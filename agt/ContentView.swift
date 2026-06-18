@@ -48,8 +48,19 @@ struct ContentView: View {
         .navigationTitle(windowTitle)
         .navigationSubtitle(windowSubtitle)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) { splitButton }
-            ToolbarItem(placement: .primaryAction) { quickTerminalButton }
+            // .sharedBackgroundVisibility(.hidden) drops the macOS 26 toolbar-item glass capsule
+            // (synthesized around adjacent items) so the icons sit flush on the dark title bar.
+            // Gated: the deployment target is macOS 14, where the API doesn't exist (older systems
+            // keep the default chrome).
+            if #available(macOS 26.0, *) {
+                ToolbarItem(placement: .primaryAction) { splitButton }
+                    .sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .primaryAction) { quickTerminalButton }
+                    .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .primaryAction) { splitButton }
+                ToolbarItem(placement: .primaryAction) { quickTerminalButton }
+            }
         }
         // the quick terminal: an in-app overlay above the whole split view (sidebar + terminal),
         // so it covers everything but the title bar (the toolbar button stays reachable to toggle).
@@ -150,7 +161,9 @@ struct ContentView: View {
         return Button {
             actions.toggleSplit()
         } label: {
-            Image(systemName: "rectangle.split.2x1")
+            // a Label (icon + title) so the toolbar's "Icon and Text" mode has text to show;
+            // the title is hidden in the default icon-only mode.
+            Label("Split", systemImage: "rectangle.split.2x1")
         }
         .help(isSplit ? "Hide split" : "Split right")
         .disabled(store.activeSession == nil)
@@ -164,7 +177,7 @@ struct ContentView: View {
         Button {
             quickTerminal.toggle()
         } label: {
-            Image(systemName: "terminal")
+            Label("Quick Terminal", systemImage: "terminal")
         }
         .help("Quick Terminal")
         .accessibilityIdentifier("quick-terminal-toggle")
@@ -240,7 +253,8 @@ struct ContentView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(.bar)
+        // no explicit background: the sidebar is transparent (the window's terminal color shows
+        // through), so a `.bar` material here would paint a mismatched darker strip.
     }
 
 }
