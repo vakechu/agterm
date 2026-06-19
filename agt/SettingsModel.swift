@@ -18,28 +18,48 @@ final class SettingsModel {
         self.store = store
         self.settingsStore = settingsStore
         self.settings = settingsStore.load()
+        // mirror the persisted window translucency into the shared channel the window chrome reads
+        // at launch, before any settings change fires.
+        applyWindowTranslucency()
     }
 
     func setFontFamily(_ value: String?) { settings.fontFamily = value; persistAndApply() }
     func setFontSize(_ value: Double?) { settings.fontSize = value; persistAndApply() }
     func setTheme(_ value: String?) { settings.theme = value; persistAndApply() }
+    func setBackgroundOpacity(_ value: Double?) { settings.backgroundOpacity = value; persistAndApply() }
+    func setBackgroundBlur(_ value: Int?) { settings.backgroundBlur = value; persistAndApply() }
 
     private func persistAndApply() {
         try? settingsStore.save(settings)
-        writeGhosttyConfig()
-        GhosttyApp.shared.reloadConfig(surfaces: liveSurfaces())
-        store.resetSessionFontSizes()
-        // refresh the app chrome (status bar + title bar + sidebar) with the new terminal color
-        // immediately, rather than only when the window next re-keys.
+        // only rebuild + rebroadcast the ghostty config (which resets every surface to the default
+        // font size) when the generated config TEXT actually changed. A window-opacity drag within
+        // the translucent range, or a blur change, leaves the config identical — re-syncing the
+        // window alone is enough and avoids hammering surface rebuilds on every slider tick.
+        if writeGhosttyConfig() {
+            GhosttyApp.shared.reloadConfig(surfaces: liveSurfaces())
+            store.resetSessionFontSizes()
+        }
+        applyWindowTranslucency()
+        // refresh the app chrome (status bar + title bar + sidebar) with the new terminal color and
+        // window translucency immediately, rather than only when the window next re-keys.
         NotificationCenter.default.post(name: .agtAppearanceChanged, object: nil)
     }
 
-    /// Write the `font-family`/`font-size`/`theme` lines to the file `GhosttyApp.loadConfig` reads.
-    private func writeGhosttyConfig() {
+    private func applyWindowTranslucency() {
+        GhosttyApp.shared.setWindowTranslucency(opacity: settings.backgroundOpacity ?? 1,
+                                                blurRadius: settings.backgroundBlur ?? 0)
+    }
+
+    /// Write the ghostty config lines (font/size/theme + the translucency pins) to the file
+    /// `GhosttyApp.loadConfig` reads. Returns true if the file content changed, so the caller can
+    /// skip the expensive reload when it didn't.
+    private func writeGhosttyConfig() -> Bool {
         let url = GhosttyApp.settingsConfigURL
+        let text = settings.ghosttyConfigLines().joined(separator: "\n") + "\n"
+        if (try? String(contentsOf: url, encoding: .utf8)) == text { return false }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let text = settings.ghosttyConfigLines().joined(separator: "\n")
-        try? (text + "\n").write(to: url, atomically: true, encoding: .utf8)
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+        return true
     }
 
     /// All live ghostty surfaces: each session's primary + split surface, plus the quick terminal.

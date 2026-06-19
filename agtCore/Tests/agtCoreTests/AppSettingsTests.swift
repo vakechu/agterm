@@ -41,4 +41,24 @@ struct AppSettingsTests {
         let lines = AppSettings(fontSize: 13.5).ghosttyConfigLines()
         #expect(lines == ["font-size = 13.5"])
     }
+
+    @Test func backgroundFieldsRoundTrip() throws {
+        let original = AppSettings(backgroundOpacity: 0.63, backgroundBlur: 20)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(original))
+        #expect(decoded == original)
+    }
+
+    @Test func translucentOpacityPinsRendererTransparent() {
+        let lines = AppSettings(backgroundOpacity: 0.63).ghosttyConfigLines()
+        #expect(lines.contains("background-opacity = 0"))
+        #expect(lines.contains("background-blur = 0"))
+    }
+
+    @Test func opaqueOrUnsetOpacityEmitsNoBackgroundPins() {
+        // full opacity, unset opacity, and a blur with no translucency all render normally:
+        // ghostty paints its own background (blur needs opacity < 1 to be visible).
+        #expect(AppSettings(backgroundOpacity: 1).ghosttyConfigLines().isEmpty)
+        #expect(AppSettings().ghosttyConfigLines().isEmpty)
+        #expect(AppSettings(backgroundBlur: 40).ghosttyConfigLines().isEmpty)
+    }
 }

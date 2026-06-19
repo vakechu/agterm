@@ -94,6 +94,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
         context.coordinator.focusActiveTerminal()
 
         let scroll = NSScrollView()
+        scroll.identifier = NSUserInterfaceItemIdentifier("agt-sidebar-scroll")
         scroll.documentView = outline
         scroll.hasVerticalScroller = true
         // transparent: the window's backgroundColor (the terminal color, set by

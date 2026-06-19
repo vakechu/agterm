@@ -13,11 +13,22 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var fontSize: Double?
     /// ghostty theme name (e.g. `Adwaita Dark`), or nil for the ghostty default.
     public var theme: String?
+    /// Window background opacity in 0...1 (1 = fully opaque), or nil for opaque. Composited at the
+    /// AppKit window level, NOT by the ghostty renderer: when < 1, `ghosttyConfigLines()` pins the
+    /// renderer fully transparent so the window's tinted background is the single translucent layer
+    /// (otherwise the surface and the window would stack two tints).
+    public var backgroundOpacity: Double?
+    /// Background blur radius (private CGS window blur, 0...100), or nil for no blur. Only has a
+    /// visible effect when `backgroundOpacity` < 1. Applied in the app target, NOT a ghostty key.
+    public var backgroundBlur: Int?
 
-    public init(fontFamily: String? = nil, fontSize: Double? = nil, theme: String? = nil) {
+    public init(fontFamily: String? = nil, fontSize: Double? = nil, theme: String? = nil,
+                backgroundOpacity: Double? = nil, backgroundBlur: Int? = nil) {
         self.fontFamily = fontFamily
         self.fontSize = fontSize
         self.theme = theme
+        self.backgroundOpacity = backgroundOpacity
+        self.backgroundBlur = backgroundBlur
     }
 
     /// The ghostty config lines for the set fields, one `key = value` per line, suitable for a
@@ -29,6 +40,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
         if let fontFamily, !fontFamily.isEmpty { lines.append("font-family = \(fontFamily)") }
         if let fontSize { lines.append("font-size = \(Self.format(fontSize))") }
         if let theme, !theme.isEmpty { lines.append("theme = \(theme)") }
+        // a translucent window composites its tint at the AppKit level, so the renderer must draw a
+        // fully transparent terminal — else the surface and the window stack two tints. At full
+        // opacity (or unset) ghostty paints its own background as usual and these are omitted.
+        if let backgroundOpacity, backgroundOpacity < 1 {
+            lines.append("background-opacity = 0")
+            lines.append("background-blur = 0")
+        }
         return lines
     }
 

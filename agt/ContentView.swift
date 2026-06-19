@@ -23,6 +23,10 @@ struct ContentView: View {
     /// state and read by the status bar, so a settings theme change (posting `.agtAppearanceChanged`)
     /// re-renders it live.
     @State private var terminalColor: Color = ContentView.resolvedTerminalColor()
+    /// The window background opacity, mirrored from `GhosttyApp` (re-read on `.agtAppearanceChanged`).
+    /// When < 1 the status bar paints nothing so the single translucent window background shows
+    /// through, keeping the whole interior a uniform translucent surface.
+    @State private var windowOpacity: Double = GhosttyApp.shared.windowOpacity
 
     var body: some View {
         NavigationSplitView {
@@ -86,6 +90,7 @@ struct ContentView: View {
         // notification to pick up the new terminal color in the status bar.
         .onReceive(NotificationCenter.default.publisher(for: .agtAppearanceChanged)) { _ in
             terminalColor = ContentView.resolvedTerminalColor()
+            windowOpacity = GhosttyApp.shared.windowOpacity
         }
         // blend the title bar with the terminal; surface the window un-minimized on launch.
         // the title token makes updateNSView re-run the blend on a session switch.
@@ -150,9 +155,10 @@ struct ContentView: View {
         .padding(.top, 2.5)
         .padding(.bottom, 5.5)
         .frame(maxWidth: .infinity, minHeight: 22)
-        // blend with the terminal: same background, so the status bar reads as a
-        // continuation of it (separated only by the hairline above).
-        .background(terminalColor)
+        // blend with the terminal: same background, so the status bar reads as a continuation of it
+        // (separated only by the hairline above). When the window is translucent it paints nothing,
+        // letting the single translucent window background show through instead of a solid strip.
+        .background(windowOpacity < 1 ? Color.clear : terminalColor)
     }
 
     /// The terminal background color from the ghostty config (a dark fallback if libghostty hasn't
@@ -373,7 +379,9 @@ private struct WindowAccessor: NSViewRepresentable {
         private func applyTitlebarBlend(_ window: NSWindow) {
             let background = GhosttyApp.shared.terminalBackgroundColor
                 ?? NSColor(srgbRed: 0.157, green: 0.173, blue: 0.204, alpha: 1)
-            WindowAppearance.sync(window: window, background: background)
+            WindowAppearance.sync(window: window, background: background,
+                                  opacity: GhosttyApp.shared.windowOpacity,
+                                  blurRadius: GhosttyApp.shared.windowBlurRadius)
         }
     }
 }

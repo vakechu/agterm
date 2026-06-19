@@ -19,6 +19,11 @@ final class GhosttyApp {
     /// window so the title bar blends with the terminal instead of drawing the default
     /// titlebar material. Nil if the color couldn't be read.
     private(set) var terminalBackgroundColor: NSColor?
+    /// Window translucency the chrome composites at the AppKit level — the background opacity
+    /// (0...1) and CGS blur radius the Settings window last applied. NOT ghostty-resolved:
+    /// `WindowAppearance.sync` reads these, `SettingsModel` writes them. Defaults are opaque.
+    private(set) var windowOpacity: Double = 1
+    private(set) var windowBlurRadius: Int = 0
     private var tickTimer: Timer?
     let callbacks = GhosttyCallbacks()
     private var resourcesDir: String?
@@ -70,6 +75,13 @@ final class GhosttyApp {
     func tick() {
         guard let app else { return }
         ghostty_app_tick(app)
+    }
+
+    /// Set the window translucency the chrome applies. Called by `SettingsModel` at launch and on
+    /// every change; the actual window re-sync rides the `.agtAppearanceChanged` notification.
+    func setWindowTranslucency(opacity: Double, blurRadius: Int) {
+        windowOpacity = opacity
+        windowBlurRadius = blurRadius
     }
 
     // MARK: - Config

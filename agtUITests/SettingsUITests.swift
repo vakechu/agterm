@@ -43,6 +43,18 @@ final class SettingsUITests: XCTestCase {
         XCTAssertTrue(poll { self.settingsValue("theme") == "Alabaster" }, "the chosen theme should persist to settings.json")
     }
 
+    func testWindowOpacitySliderPersists() throws {
+        app.typeKey(",", modifierFlags: .command)
+        app.buttons["Appearance"].firstMatch.click()
+
+        let opacity = app.sliders["settings-bg-opacity"].firstMatch
+        XCTAssertTrue(opacity.waitForExistence(timeout: 5), "Appearance should have a background-opacity slider")
+        opacity.adjust(toNormalizedSliderPosition: 0.5)
+
+        XCTAssertTrue(poll { (self.settingsDouble("backgroundOpacity") ?? 1) < 1 },
+                      "moving the opacity slider should persist a sub-1 backgroundOpacity to settings.json")
+    }
+
     // MARK: - Helpers
 
     private func poll(_ condition: () -> Bool, timeout: TimeInterval = 5) -> Bool {
@@ -55,9 +67,16 @@ final class SettingsUITests: XCTestCase {
     }
 
     private func settingsValue(_ key: String) -> String? {
+        settingsObject()?[key] as? String
+    }
+
+    private func settingsDouble(_ key: String) -> Double? {
+        (settingsObject()?[key] as? NSNumber)?.doubleValue
+    }
+
+    private func settingsObject() -> [String: Any]? {
         let file = stateDir.appendingPathComponent("settings.json")
-        guard let data = try? Data(contentsOf: file),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return obj[key] as? String
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 }
