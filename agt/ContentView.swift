@@ -276,6 +276,9 @@ struct ContentView: View {
                         .accessibilityIdentifier("quick-terminal")
                     QuickTerminalPane()
                         .frame(width: geo.size.width * 0.9, height: geo.size.height * 0.9)
+                        // solid backing so the quick terminal stays opaque even when the main window
+                        // is translucent (its ghostty surface draws transparent under background-opacity=0).
+                        .background(terminalColor)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(
                             RoundedRectangle(cornerRadius: 12)
