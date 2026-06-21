@@ -6,7 +6,7 @@ The distinguishing feature is a two-level workspace tree in a vertical sidebar: 
 
 ## Approach
 
-`agt` links the prebuilt `GhosttyKit.xcframework` from the [thdxg/ghostty](https://github.com/thdxg/ghostty) fork's release artifacts. There is no Zig build, no git submodule, and no source checkout of Ghostty. The xcframework and the accompanying ghostty resources (themes, shell-integration scripts, compiled terminfo database) are downloaded by `scripts/setup.sh`, are gitignored, and are never committed.
+`agt` links `GhosttyKit.xcframework`, which `scripts/setup.sh` builds from upstream [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty) source — a shallow checkout at a pinned commit plus `zig build`, using the keg-only `zig@0.15` formula for the zig version ghostty pins. Building from source keeps the libghostty toolchain self-owned: no third-party fork, no prunable daily-build download. The pin is a deliberately chosen known-good commit (see [docs/known-issues.md](docs/known-issues.md)). The xcframework and the accompanying ghostty resources (themes, shell-integration scripts, compiled terminfo database) are gitignored and never committed; the build is one-time, cached by a present-check.
 
 The project is split into two modules:
 
@@ -18,12 +18,13 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the module split, the surface-ownersh
 ## Requirements
 
 - macOS 14 or later.
-- Xcode 26 with `xcodegen` and `gh` on `PATH`.
+- Xcode 26 with `xcodegen` on `PATH`, plus its Metal Toolchain (auto-downloaded on first setup).
+- Homebrew, for the `zig@0.15` formula `scripts/setup.sh` builds libghostty with.
 
 ## Build and run
 
 ```sh
-scripts/setup.sh   # download the xcframework + ghostty resources (idempotent)
+scripts/setup.sh   # build libghostty from ghostty source + stage resources (idempotent; first run takes a few min)
 scripts/run.sh     # setup, generate the Xcode project, build Debug, launch
 ```
 

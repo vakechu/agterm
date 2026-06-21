@@ -1,46 +1,42 @@
 # Known issues
 
-## Font increase blanks the scrollback (parked)
+## Font increase blanks the scrollback — libghostty regression (fixed by the pinned build)
 
 **Symptom:** pressing cmd-+ (increase font size) when the terminal has more than one screen of
 output blanks the scrollback — scrolling up shows empty lines, the data appears lost. Decreasing
 the font (cmd--) is fine; it only happens on increase, and only when there is scrollback.
 
-**Isolation:**
-- Vanilla Ghostty.app: not affected.
-- cmux (another libghostty embedder): not affected.
-- macterm: affected.
-- agt: affected — and agt's libghostty integration is adapted from macterm.
+**Root cause: a libghostty `main` renderer regression — NOT agt's code.** It is fixed by pinning
+`scripts/setup.sh` to a pre-regression ghostty commit (`GHOSTTY_REV = 4dcb09ada`, 2026-04-30). Earlier
+analysis blamed agt's fixed-pixel pane and "macterm-style embedding" (a shrinking grid on a font
+increase) — that was wrong. No app-side change fixes it, and a from-source build of a *different*
+embedder (conterm) against the same post-regression libghostty blanks identically, while the same
+embedder against a pre-regression libghostty does not.
 
-So this is the **macterm-style embedding**, not libghostty itself. agt holds a fixed-pixel pane and
-only *records* the font change (`GHOSTTY_ACTION_CELL_SIZE` → `reportFontSize`); it does not resize
-on a font change. A font increase therefore makes libghostty re-flow into a **shrinking grid**,
-which blanks the scrollback. Vanilla avoids this by growing its window so the grid never shrinks;
-cmux avoids it with a **custom NSScrollView scrollback architecture** (it reimplements scrollback
-natively instead of using ghostty's built-in scrollback).
+**Bisect (all on `1.3.2-main`):**
+- `d8d2849` (2026-04-11), bundled by conterm v2.2.0 — **good**.
+- `4dcb09ada` (2026-04-30), our pin, built from upstream — **good** (verified in agt).
+- `11ab3c8` (2026-05-23), the *oldest* thdxg/ghostty daily build that still exists — **blanks**.
+- `1036233` (06-16) … `de36cdf` (06-20), every later thdxg daily — **blanks**.
 
-**Tried, did not fix:**
-- Re-asserting `ghostty_surface_set_size` with the same pixel dims on `CELL_SIZE` — libghostty
-  short-circuits an identical size, so no re-flow happens.
-- Forcing a re-flow via an off-by-one `set_size(w, h-1)` → `set_size(w, h)` on `CELL_SIZE` — no
-  change, so the blanking is not merely a stale-display issue a re-flow can repair.
-- (2026-06-20) `ghostty_surface_refresh` on the font-change path (`reportFontSize`) — no repaint.
-- (2026-06-20) the off-by-one `set_size` recompute above PLUS `ghostty_surface_refresh` — still no
-  repaint. But a `ghostty_surface_read_text(GHOSTTY_POINT_SCREEN)` probe shows the full screen+scrollback
-  is STILL in the buffer (~8k chars) while the pane is blank, so this is a render bug, not data loss.
+So the regression landed on ghostty `main` after 2026-04-30 and was present by 2026-05-23. agt used to
+download thdxg's pinned daily build (`build-2026-06-20`), which is well past it. thdxg prunes daily
+releases to ~28 days, so no good daily build is downloadable — which is why `setup.sh` now builds
+libghostty from upstream source at a pinned good SHA instead (see `CLAUDE.md` → GhosttyKit.xcframework).
 
-**Leads for a real fix (future):** match the working embedders — either grow the surface on a font
-change (hard in the fixed `NavigationSplitView` pane), or move to a cmux-style native scrollback;
-or bump the pinned `thdxg/ghostty` build (a newer libghostty may fix the shrink-reflow). cmux uses an
-absolute `set_font_size:<points>` binding action (note: an absolute set-font-size binding does
-exist, contrary to an earlier assumption).
+**Why it's a silent blank, not a crash:** the data isn't lost — a `ghostty_surface_read_text` probe
+returns the full screen+scrollback while the pane shows blank. A font increase shrinks the grid, which
+drives libghostty's resize/reflow cursor math; the underlying fault traps in a safety build, but in
+`ReleaseFast` (how we build libghostty) it silently reads zeros instead (cf. ghostty #11899), so the
+scrollback region paints empty rather than panicking.
 
-**Correction (2026-06-20): the buffer is intact — this is a render bug, not data loss.** A
-`ghostty_surface_read_text(GHOSTTY_POINT_SCREEN)` probe in `reportFontSize` returns the full
-screen+scrollback (~8k chars) after each font increase, while the pane shows blank. So the scrollback is
-NOT re-flowed away — libghostty keeps the data; the Metal renderer just paints the scrollback region empty
-once the grid shrinks. This is the SAME class as the split-toggle re-parent blank (also buffer-intact,
-there fixed by `ghostty_surface_refresh`), but harder: neither `refresh` nor a forced grid recompute
-(`set_size` jitter + `refresh`) repaints it, and a font change doesn't resize the view so the split-toggle
-fix in `updateMetalLayerSize` never fires here. The real fix is still one of the leads above, but it
-targets the RENDERER (the data is present), not buffer preservation.
+**Upstream tracking** — a cluster of resize/reflow/scrollback fixes on ghostty `main`:
+- ghostty #12907 (saturate cursor subtraction in `resizeCols`) — merged 2026-06-04
+- ghostty #12935 (guard wrap count when resize pushes cursor to scrollback; its repro is `cmd+=` font increase) — merged 2026-06-05
+- ghostty #13000 / #13048 (`PageList.scroll` row-offset type) — open as of 2026-06-19
+
+Those June 4–5 fixes did NOT clear it in thdxg's 2026-06-20 build (still blanks under test), and #13048 is
+still open, so no good *recent* build exists yet — `4dcb09ada` (Apr 30) predates the whole churn.
+
+**When to revisit:** watch the issues above (and newer resize/reflow fixes). Once a candidate build tests
+clean on the font-increase-with-scrollback case, bump `GHOSTTY_REV` in `scripts/setup.sh` forward.
