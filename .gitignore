@@ -11,3 +11,10 @@ agt.xcodeproj/
 .swiftpm/
 
 .DS_Store
+
+# app state / runtime files (only appear if AGT_STATE_DIR is pointed at the repo)
+settings.json
+windows.json
+workspaces.json
+windows/
+*.sock
