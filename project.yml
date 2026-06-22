@@ -97,10 +97,13 @@ targets:
           dest="$CODESIGNING_FOLDER_PATH/Contents/MacOS/agtermctl"
           mkdir -p "$(dirname "$dest")"
           cp -f "$src" "$dest"
+          # ad-hoc sign the helper + re-seal the app (Debug/normal builds). Developer ID signing for
+          # releases is done authoritatively by scripts/release.sh AFTER xcodebuild returns (so it
+          # can't be clobbered by Xcode's own final code-sign, which also adds the required timestamp).
           codesign --force --options runtime --sign - "$dest"
-          # re-seal the whole app: this phase can run AFTER Xcode's own code-sign on
-          # incremental builds, so adding the helper would otherwise break the seal. --deep
-          # re-signs every nested Mach-O too (the Debug agterm.debug.dylib, the helper).
+          # re-seal the whole app: this phase can run AFTER Xcode's own code-sign on incremental
+          # builds, so adding the helper would otherwise break the seal. --deep re-signs every nested
+          # Mach-O too (the Debug agterm.debug.dylib, the helper).
           codesign --force --deep --options runtime --entitlements "$SRCROOT/agterm/agterm.entitlements" --sign - "$CODESIGNING_FOLDER_PATH"
     dependencies:
       - framework: GhosttyKit.xcframework
