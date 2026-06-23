@@ -54,4 +54,24 @@ extension URL {
         }
         return appendingPathComponent("workspaces.json")
     }
+
+    /// Polls the hermetic window snapshot (`windowSnapshotFile()`) until `extract` maps the parsed
+    /// snapshot object to `expected`, or the timeout elapses. `self` is the state directory. `extract`
+    /// returns nil when the snapshot isn't yet in the wanted shape (file missing, key absent), which
+    /// keeps polling. Shared by the session/workspace order pollers so they don't each re-implement the
+    /// read-JSON → map → compare → 200ms-sleep loop.
+    func pollSnapshot<T: Equatable>(equals expected: T, timeout: TimeInterval,
+                                    extract: (([String: Any]) -> T?)) -> Bool {
+        let file = windowSnapshotFile()
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: file),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               extract(obj) == expected {
+                return true
+            }
+            usleep(200_000)
+        }
+        return false
+    }
 }

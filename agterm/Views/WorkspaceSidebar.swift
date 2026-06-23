@@ -6,6 +6,10 @@ import SwiftUI
 /// drags (within the outline) use this to identify the session being moved.
 private let sessionPasteboardType = NSPasteboard.PasteboardType("com.umputun.agterm.session")
 
+/// Custom pasteboard type carrying a dragged workspace's UUID string. Local-only
+/// drags (within the outline) use this to identify the workspace being reordered.
+private let workspacePasteboardType = NSPasteboard.PasteboardType("com.umputun.agterm.workspace")
+
 /// An `NSTableCellView` with a leading icon, the name field, and a trailing badge.
 /// The icon is the inherited `cell.imageView` (a filled folder for a workspace, an outlined
 /// terminal for a session), so AppKit re-tints it white on a selected row. The name field is `cell.textField`
@@ -165,9 +169,10 @@ struct WorkspaceSidebar: NSViewRepresentable {
         outline.addTableColumn(column)
         outline.outlineTableColumn = column
 
-        // native drag-and-drop: session rows are draggable; drops accepted onto a
-        // different workspace (the workspace row or among its children).
-        outline.registerForDraggedTypes([sessionPasteboardType])
+        // native drag-and-drop: session rows reorder within / move across workspaces; workspace
+        // rows reorder among themselves. Registering BOTH types is load-bearing — without the
+        // workspace type AppKit never delivers validate/accept for a workspace drag.
+        outline.registerForDraggedTypes([sessionPasteboardType, workspacePasteboardType])
         outline.setDraggingSourceOperationMask(.move, forLocal: true)
         outline.setDraggingSourceOperationMask([], forLocal: false)
 
@@ -815,9 +820,14 @@ struct WorkspaceSidebar: NSViewRepresentable {
         // MARK: - Drag and drop
 
         func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-            guard let node = item as? SidebarNode, node.kind == .session else { return nil }
+            guard let node = item as? SidebarNode else { return nil }
             let pbItem = NSPasteboardItem()
-            pbItem.setString(node.id.uuidString, forType: sessionPasteboardType)
+            switch node.kind {
+            case .session:
+                pbItem.setString(node.id.uuidString, forType: sessionPasteboardType)
+            case .workspace:
+                pbItem.setString(node.id.uuidString, forType: workspacePasteboardType)
+            }
             return pbItem
         }
 
@@ -825,13 +835,15 @@ struct WorkspaceSidebar: NSViewRepresentable {
                          validateDrop info: NSDraggingInfo,
                          proposedItem item: Any?,
                          proposedChildIndex index: Int) -> NSDragOperation {
-            guard let sessionID = draggedSessionID(from: info), let target = targetWorkspace(forDropOn: item) else {
-                return []
+            if draggedWorkspaceID(from: info) != nil {
+                guard let move = resolveWorkspaceMove(from: info, item: item, childIndex: index) else { return [] }
+                // workspace reorder lives at the top level: highlight a between-rows slot under the root.
+                outlineView.setDropItem(nil, dropChildIndex: move.dropChildIndex)
+                return .move
             }
-            // only a move ONTO a different workspace counts
-            guard ownerWorkspaceID(ofSession: sessionID) != target else { return [] }
-            // retarget the drop to the whole workspace row (no in-between insertion)
-            outlineView.setDropItem(workspaceNode(forID: target), dropChildIndex: NSOutlineViewDropOnItemIndex)
+            guard let move = resolveSessionMove(from: info, item: item, childIndex: index) else { return [] }
+            // redraw the drop highlight on the target workspace row at the resolved insert slot.
+            outlineView.setDropItem(workspaceNode(forID: move.workspace), dropChildIndex: move.dropChildIndex)
             return .move
         }
 
@@ -839,29 +851,70 @@ struct WorkspaceSidebar: NSViewRepresentable {
                          acceptDrop info: NSDraggingInfo,
                          item: Any?,
                          childIndex index: Int) -> Bool {
-            guard let sessionID = draggedSessionID(from: info), let target = targetWorkspace(forDropOn: item) else {
-                return false
+            if draggedWorkspaceID(from: info) != nil {
+                guard let move = resolveWorkspaceMove(from: info, item: item, childIndex: index) else { return false }
+                store.moveWorkspace(move.workspaceID, at: move.destination)
+                return true
             }
-            guard ownerWorkspaceID(ofSession: sessionID) != target else { return false }
-            store.moveSession(sessionID, toWorkspace: target)
+            guard let move = resolveSessionMove(from: info, item: item, childIndex: index) else { return false }
+            store.moveSession(move.sessionID, toWorkspace: move.workspace, at: move.destination)
             return true
+        }
+
+        /// Resolves a proposed session drop into the move it would perform, or nil when the drop is
+        /// invalid or a no-op (so both `validateDrop` and `acceptDrop` agree exactly). Reads the pasteboard
+        /// + store to map the dragged session and drop-target row to indices, then defers the index
+        /// arithmetic (drop-on-row redirect, post-removal off-by-one, no-op detection) to the host-free
+        /// `SidebarDrop.resolveSession`. `dropChildIndex` is the PRE-removal slot to highlight; `destination`
+        /// is the POST-removal index `moveSession` expects.
+        private func resolveSessionMove(from info: NSDraggingInfo, item: Any?, childIndex index: Int)
+            -> (sessionID: UUID, workspace: UUID, dropChildIndex: Int, destination: Int)? {
+            guard let sessionID = draggedSessionID(from: info), let node = item as? SidebarNode,
+                  let source = store.sessionLocation(ofSession: sessionID) else { return nil }
+
+            let target: SidebarDrop.SessionDropTarget
+            switch node.kind {
+            case .workspace:
+                let count = store.workspaces.first(where: { $0.id == node.id })?.sessions.count ?? 0
+                target = .workspaceRow(id: node.id, sessionCount: count)
+            case .session:
+                guard let drop = store.sessionLocation(ofSession: node.id) else { return nil }
+                target = .sessionRow(workspace: drop.workspace, sessionIndex: drop.index, sessionCount: drop.count)
+            }
+
+            guard let move = SidebarDrop.resolveSession(sourceWorkspace: source.workspace, sourceIndex: source.index,
+                                                        target: target, childIndex: index) else { return nil }
+            return (sessionID, move.workspace, move.dropChildIndex, move.destination)
+        }
+
+        /// Resolves a proposed workspace drop into the reorder it would perform, or nil when the drop is
+        /// invalid or a no-op (so both `validateDrop` and `acceptDrop` agree exactly). A workspace reorder
+        /// is valid ONLY at the top level — `item` must be nil (the root); a drop onto a session or into a
+        /// workspace's children is rejected. The index arithmetic defers to `SidebarDrop.resolveWorkspace`;
+        /// `dropChildIndex` is the PRE-removal highlight slot and `destination` the POST-removal index
+        /// `moveWorkspace` expects.
+        private func resolveWorkspaceMove(from info: NSDraggingInfo, item: Any?, childIndex index: Int)
+            -> (workspaceID: UUID, dropChildIndex: Int, destination: Int)? {
+            guard let workspaceID = draggedWorkspaceID(from: info) else { return nil }
+            // only a top-level drop is valid; reject dropping onto a session/workspace row or its children.
+            guard item == nil else { return nil }
+            guard let sourceIndex = store.workspaces.firstIndex(where: { $0.id == workspaceID }) else { return nil }
+
+            guard let move = SidebarDrop.resolveWorkspace(sourceIndex: sourceIndex, count: store.workspaces.count,
+                                                          childIndex: index) else { return nil }
+            return (workspaceID, move.dropChildIndex, move.destination)
+        }
+
+        /// Reads the dragged workspace id from the pasteboard.
+        private func draggedWorkspaceID(from info: NSDraggingInfo) -> UUID? {
+            guard let string = info.draggingPasteboard.string(forType: workspacePasteboardType) else { return nil }
+            return UUID(uuidString: string)
         }
 
         /// Reads the dragged session id from the pasteboard.
         private func draggedSessionID(from info: NSDraggingInfo) -> UUID? {
             guard let string = info.draggingPasteboard.string(forType: sessionPasteboardType) else { return nil }
             return UUID(uuidString: string)
-        }
-
-        /// The destination workspace id for a drop on `item`: a workspace row maps
-        /// to itself; a session row maps to its owning workspace; a nil item (drop
-        /// in empty space) has no workspace target.
-        private func targetWorkspace(forDropOn item: Any?) -> UUID? {
-            guard let node = item as? SidebarNode else { return nil }
-            switch node.kind {
-            case .workspace: return node.id
-            case .session: return ownerWorkspaceID(ofSession: node.id)
-            }
         }
 
         private func workspaceNode(forID id: UUID) -> SidebarNode? {
