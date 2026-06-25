@@ -35,10 +35,25 @@ public final class AppStore {
     public var workspaces: [Workspace]
     public var selectedSessionID: UUID?
 
-    /// Whether this window's sidebar is shown. Ephemeral per-window UI state (NOT in `Snapshot`, so it
-    /// resets to visible on relaunch); the custom split owns visibility, so the toolbar button, the View
-    /// menu item, the action palette, and the `sidebar` control command all flip this one flag.
+    /// Whether this window's sidebar is shown. Per-window UI state, persisted in `Snapshot` (restored on
+    /// relaunch); the custom split owns visibility, so the toolbar button, the View menu item, the action
+    /// palette, and the `sidebar` control command all flip this one flag.
     public var sidebarVisible = true
+
+    /// This window's sidebar width in points. Per-window UI state, persisted in `Snapshot`. Driven by the
+    /// sidebar divider drag (clamped to `sidebarWidthMin...sidebarWidthMax`); restored on relaunch.
+    public var sidebarWidth: Double = AppStore.sidebarWidthDefault
+
+    /// The sidebar width default and drag/restore bounds, shared by the view's divider drag and the
+    /// `restore()` clamp so the two can't drift (and a hand-edited snapshot can't drive an out-of-range frame).
+    public static let sidebarWidthDefault: Double = 220
+    public static let sidebarWidthMin: Double = 160
+    public static let sidebarWidthMax: Double = 560
+
+    /// The persisted split-divider left-pane fraction bounds. The live capture skips degenerate extremes
+    /// outside this range and `restore()` clamps to it, so the on-disk ratio is always within bounds.
+    public static let splitRatioMin: Double = 0.05
+    public static let splitRatioMax: Double = 0.95
 
     /// Most-recently-selected session ids, front = current. Drives the Ctrl-Tab switcher
     /// (`items[1]` is the previous session). `@ObservationIgnored`: read imperatively by the
@@ -237,6 +252,7 @@ public final class AppStore {
         session.splitCwd = nil
         session.splitTitle = nil
         session.initialSplitCwd = nil
+        session.splitRatio = nil // tearing down the split clears its geometry too, so a fresh split opens even
         // a search bar pinned to the torn-down split surface would otherwise stay stuck (the weak
         // `searchSurface` zeroes but `searchActive` stays true), so reset search on the surviving session.
         session.clearSearch()
@@ -259,6 +275,7 @@ public final class AppStore {
         session.isSplit = false
         session.hasSplit = false
         session.splitFocused = true
+        session.splitRatio = nil // promoted to a single pane; a later split should open even, not stale
         if let cwd = session.splitCwd { session.currentCwd = cwd }
         // the primary surface (possibly the search owner) is torn down while the session survives as the
         // promoted split, so reset search rather than leave a stuck bar pinned to the gone primary.
@@ -484,10 +501,11 @@ public final class AppStore {
             WorkspaceSnapshot(id: workspace.id, name: workspace.name, sessions: workspace.sessions.map { session in
                 SessionSnapshot(id: session.id, customName: session.customName, cwd: session.currentCwd ?? session.initialCwd,
                                 isSplit: session.isSplit, fontSize: session.fontSize,
-                                splitCwd: session.splitCwd ?? session.initialSplitCwd)
+                                splitCwd: session.splitCwd ?? session.initialSplitCwd, splitRatio: session.splitRatio)
             })
         }
-        return Snapshot(selectedSessionID: selectedSessionID, workspaces: workspaceSnapshots)
+        return Snapshot(selectedSessionID: selectedSessionID, workspaces: workspaceSnapshots,
+                        sidebarWidth: sidebarWidth, sidebarVisible: sidebarVisible)
     }
 
     /// Rebuilds the tree from a snapshot: fresh `Session`s (surfaces and shells
@@ -506,10 +524,17 @@ public final class AppStore {
                 session.hasSplit = session.isSplit
                 session.fontSize = sessionSnapshot.fontSize
                 session.initialSplitCwd = sessionSnapshot.splitCwd
+                // clamp on restore (like sidebarWidth) so a corrupt snapshot can't feed an out-of-range
+                // fraction into NSSplitView.setPosition; nil stays nil (the even default).
+                session.splitRatio = sessionSnapshot.splitRatio.map { min(AppStore.splitRatioMax, max(AppStore.splitRatioMin, $0)) }
                 return session
             }
             return Workspace(id: workspaceSnapshot.id, name: workspaceSnapshot.name, sessions: sessions)
         }
+        // clamp on restore (not just nil-default) so a corrupt or hand-edited snapshot can't drive an
+        // out-of-range frame width; the drag path clamps to the same bounds.
+        sidebarWidth = min(AppStore.sidebarWidthMax, max(AppStore.sidebarWidthMin, snapshot.sidebarWidth ?? AppStore.sidebarWidthDefault))
+        sidebarVisible = snapshot.sidebarVisible ?? true
         if let id = snapshot.selectedSessionID, session(withID: id) == nil {
             selectedSessionID = nil
         } else {

@@ -356,6 +356,7 @@ struct AppStoreTests {
         let split = SpySurface()
         session.splitSurface = split
         session.splitCwd = "/var/log"
+        session.splitRatio = 0.7
         store.closeSplit(session.id)
         #expect(session.isSplit == false)
         #expect(session.hasSplit == false)
@@ -363,6 +364,7 @@ struct AppStoreTests {
         #expect(session.splitSurface == nil)
         #expect(session.splitCwd == nil)
         #expect(session.initialSplitCwd == nil)
+        #expect(session.splitRatio == nil) // teardown clears geometry too, so a fresh re-split opens even
         #expect(split.teardownCount == 1)
     }
 
@@ -375,6 +377,7 @@ struct AppStoreTests {
         session.isSplit = true
         session.hasSplit = true
         session.splitCwd = "/var/log"
+        session.splitRatio = 0.3
         store.closePrimaryPane(session.id)
         #expect(store.session(withID: session.id) != nil) // session survives
         #expect(primary.teardownCount == 1)               // the dead primary is torn down
@@ -384,6 +387,7 @@ struct AppStoreTests {
         #expect(session.isSplit == false)
         #expect(session.hasSplit == false)
         #expect(session.splitFocused == true)             // the maximized survivor is shown
+        #expect(session.splitRatio == nil)                // promoted to single, so a later split opens even
         #expect(session.currentCwd == "/var/log")         // the survivor's cwd is promoted
     }
 
@@ -405,12 +409,14 @@ struct AppStoreTests {
         let split = SpySurface(); session.splitSurface = split
         session.isSplit = true
         session.hasSplit = true
+        session.splitRatio = 0.4
         store.closeSplitPane(session.id)
         #expect(store.session(withID: session.id) != nil) // session survives
         #expect(split.teardownCount == 1)                 // the split is torn down
         #expect(primary.teardownCount == 0)               // the primary is kept
         #expect(session.splitSurface == nil)
         #expect(session.isSplit == false)
+        #expect(session.splitRatio == nil)                // delegates to closeSplit, which clears the ratio
     }
 
     @Test func closeSplitPaneWithoutPrimaryClosesSession() {
@@ -505,6 +511,73 @@ struct AppStoreTests {
         #expect(r.initialCwd == "/a/primary")
         #expect(r.initialSplitCwd == "/var/log")
         #expect(r.isSplit == true)
+    }
+
+    @Test func sidebarWidthAndVisibilityRoundTripThroughSnapshot() {
+        let store = Self.makeStore()
+        _ = store.addWorkspace(name: "work")
+        store.sidebarWidth = 312
+        store.sidebarVisible = false
+        let snap = store.snapshot()
+        #expect(snap.sidebarWidth == 312)
+        #expect(snap.sidebarVisible == false)
+        let restored = Self.makeStore()
+        restored.restore(from: snap)
+        #expect(restored.sidebarWidth == 312)
+        #expect(restored.sidebarVisible == false)
+    }
+
+    @Test func sidebarDefaultsWhenSnapshotOmitsThem() {
+        // a snapshot written before these fields existed decodes them as nil; restore falls back to defaults.
+        let store = Self.makeStore()
+        store.sidebarWidth = 400
+        store.sidebarVisible = false
+        store.restore(from: Snapshot(workspaces: []))
+        #expect(store.sidebarWidth == 220)
+        #expect(store.sidebarVisible == true)
+    }
+
+    @Test func restoreClampsOutOfRangeSidebarWidth() {
+        // a corrupt or hand-edited snapshot must not drive an out-of-range frame width; restore clamps it.
+        let store = Self.makeStore()
+        store.restore(from: Snapshot(workspaces: [], sidebarWidth: 2000))
+        #expect(store.sidebarWidth == AppStore.sidebarWidthMax)
+        store.restore(from: Snapshot(workspaces: [], sidebarWidth: 10))
+        #expect(store.sidebarWidth == AppStore.sidebarWidthMin)
+    }
+
+    @Test func restoreClampsOutOfRangeSplitRatio() {
+        // a corrupt snapshot ratio must not feed an out-of-range fraction into NSSplitView.setPosition.
+        let store = Self.makeStore()
+        let ws = store.addWorkspace(name: "work")
+        let session = store.addSession(toWorkspace: ws.id, cwd: "/a")!
+        session.isSplit = true
+        session.splitRatio = 5.0
+        let restored = Self.makeStore()
+        restored.restore(from: store.snapshot())
+        #expect(restored.workspaces[0].sessions[0].splitRatio == AppStore.splitRatioMax)
+    }
+
+    @Test func splitRatioRoundTripsThroughSnapshot() {
+        let store = Self.makeStore()
+        let ws = store.addWorkspace(name: "work")
+        let session = store.addSession(toWorkspace: ws.id, cwd: "/a")!
+        session.isSplit = true
+        session.splitRatio = 0.63
+        #expect(store.snapshot().workspaces[0].sessions[0].splitRatio == 0.63)
+        let restored = Self.makeStore()
+        restored.restore(from: store.snapshot())
+        #expect(restored.workspaces[0].sessions[0].splitRatio == 0.63)
+    }
+
+    @Test func sessionSnapshotDecodesWithoutSplitRatio() throws {
+        // a SessionSnapshot persisted before splitRatio existed (the key absent) must decode to nil, not
+        // fail the load — the forward-compat contract the optional field documents.
+        let json = "{\"id\":\"\(UUID().uuidString)\",\"cwd\":\"/a\"}"
+        let snap = try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
+        #expect(snap.splitRatio == nil)
+        #expect(snap.isSplit == nil)
+        #expect(snap.fontSize == nil)
     }
 
     @Test func openOverlaySetsCommandAndFlag() {
