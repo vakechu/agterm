@@ -168,6 +168,9 @@ private struct WindowContentView: View {
     /// Mirror of `GhosttyApp.compactToolbar`: when true the cwd subtitle is dropped so the title bar
     /// collapses to a single line. Refreshed on `.agtermAppearanceChanged`, like `terminalColor`.
     @State private var compactToolbar: Bool = WindowContentView.resolvedCompactToolbar()
+    /// Mirror of `GhosttyApp.inactivePaneMuteStrength` (0...10): how strongly `paneDim` mutes the
+    /// inactive split pane's text. Refreshed on `.agtermAppearanceChanged`, like `compactToolbar`.
+    @State private var inactivePaneMute: Int = WindowContentView.resolvedInactivePaneMute()
     /// The terminal theme's foreground color, mirrored from `GhosttyApp` and used for the chrome text
     /// (title bar text + buttons, sidebar bottom bar) so non-terminal text tracks the theme. Refreshed
     /// on `.agtermAppearanceChanged`, like `terminalColor`.
@@ -221,6 +224,7 @@ private struct WindowContentView: View {
             terminalColor = WindowContentView.resolvedTerminalColor()
             compactToolbar = WindowContentView.resolvedCompactToolbar()
             chromeText = WindowContentView.resolvedChromeText()
+            inactivePaneMute = WindowContentView.resolvedInactivePaneMute()
         }
         // blend the title bar with the terminal; report frontmost/close to the library; surface the
         // window un-minimized on launch. the title token makes updateNSView re-run the blend on a
@@ -505,12 +509,16 @@ private struct WindowContentView: View {
         }
     }
 
-    /// A translucent dim over the inactive split pane so the active one stands out. Clicks
-    /// pass through (`allowsHitTesting(false)`) so the dimmed pane can still be focused;
-    /// `dimmed == false` renders nothing.
+    /// Mutes the inactive split pane's TEXT so the active pane stands out, WITHOUT darkening the
+    /// background: a translucent wash of the terminal background color over the pane. Background pixels
+    /// blend bg→bg (unchanged), text pixels blend text→bg (less bright) — the way other terminals dim an
+    /// inactive pane. The opacity comes from the Settings mute-strength slider (0...10) via
+    /// `AppSettings.muteOpacity`, so strength 0 renders nothing. Clicks pass through
+    /// (`allowsHitTesting(false)`) so the muted pane can still be focused; `dimmed == false` renders nothing.
     @ViewBuilder private func paneDim(_ dimmed: Bool) -> some View {
-        if dimmed {
-            Color.black.opacity(0.12).allowsHitTesting(false)
+        let opacity = AppSettings.muteOpacity(strength: inactivePaneMute)
+        if dimmed, opacity > 0 {
+            terminalColor.opacity(opacity).allowsHitTesting(false)
         }
     }
 
@@ -526,6 +534,12 @@ private struct WindowContentView: View {
     /// settings change (posting `.agtermAppearanceChanged`) drops/restores the cwd subtitle live.
     private static func resolvedCompactToolbar() -> Bool {
         GhosttyApp.shared.compactToolbar
+    }
+
+    /// The inactive-pane mute strength from the (non-observable) `GhosttyApp`, mirrored into view state
+    /// so a settings change (posting `.agtermAppearanceChanged`) re-renders the inactive pane live.
+    private static func resolvedInactivePaneMute() -> Int {
+        GhosttyApp.shared.inactivePaneMuteStrength
     }
 
     /// The terminal theme's foreground color (a light fallback if libghostty hasn't reported one),

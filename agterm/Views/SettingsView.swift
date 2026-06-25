@@ -71,6 +71,20 @@ private struct GeneralSettingsView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+
+            Section("Panes") {
+                HStack {
+                    Text("Inactive pane mute")
+                    Slider(value: inactivePaneMuteStrength, in: 0 ... 10, step: 1)
+                        .accessibilityIdentifier("settings-inactive-pane-mute")
+                    Text("\(model.settings.inactivePaneMuteStrength ?? AppSettings.defaultInactivePaneMuteStrength)")
+                        .monospacedDigit()
+                        .frame(width: 42, alignment: .trailing)
+                }
+                Text("How much the inactive split pane's text is dimmed (0 = off, 10 = extreme). The background is left unchanged.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -95,6 +109,13 @@ private struct GeneralSettingsView: View {
     private var mouseScrollMultiplier: Binding<Double> {
         Binding(get: { model.settings.mouseScrollMultiplier ?? 3 },
                 set: { model.setMouseScrollMultiplier($0 == 3 ? nil : $0) })
+    }
+
+    /// nil (the default) reads as `defaultInactivePaneMuteStrength`; sliding back to it stores nil so
+    /// settings.json stays minimal. The slider is integer-stepped, so the Double is rounded to an Int.
+    private var inactivePaneMuteStrength: Binding<Double> {
+        Binding(get: { Double(model.settings.inactivePaneMuteStrength ?? AppSettings.defaultInactivePaneMuteStrength) },
+                set: { let v = Int($0.rounded()); model.setInactivePaneMuteStrength(v == AppSettings.defaultInactivePaneMuteStrength ? nil : v) })
     }
 }
 

@@ -12,6 +12,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// ghostty's built-in default (the "default ghostty" entry in the theme picker).
     public static let defaultTheme = "agterm"
 
+    /// The out-of-the-box inactive-split-pane mute strength on the 0...10 scale (0 = no mute, 10 =
+    /// extreme), used when `inactivePaneMuteStrength` is nil. 5 maps to the historical 0.4 opacity.
+    public static let defaultInactivePaneMuteStrength = 5
+
     /// Terminal font family name (e.g. `SF Mono`), or nil for the ghostty default.
     public var fontFamily: String?
     /// Default terminal font size in points, or nil for the ghostty default.
@@ -57,13 +61,18 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// at 3, which speeds the trackpad up out of the box. Consequence: it overrides any
     /// `mouse-scroll-multiplier` set in the user's own `~/.config/ghostty/config`.
     public var mouseScrollMultiplier: Double?
+    /// How strongly the inactive split pane's text is muted, on a 0...10 scale (0 = no mute, 10 =
+    /// extreme); nil means the default (`defaultInactivePaneMuteStrength`). Applied as a SwiftUI
+    /// overlay opacity in the app target (see `muteOpacity(strength:)`), NOT a ghostty key — it never
+    /// appears in `ghosttyConfigLines()`.
+    public var inactivePaneMuteStrength: Int?
 
     public init(fontFamily: String? = nil, fontSize: Double? = nil, theme: String? = nil,
                 backgroundOpacity: Double? = nil, backgroundBlur: Int? = nil, notificationsEnabled: Bool? = nil,
                 compactToolbar: Bool? = nil, notificationBadgeEnabled: Bool? = nil,
                 activeStatusColorHex: String? = nil, blockedStatusColorHex: String? = nil,
                 completedStatusColorHex: String? = nil, configDirectory: String? = nil,
-                mouseScrollMultiplier: Double? = nil) {
+                mouseScrollMultiplier: Double? = nil, inactivePaneMuteStrength: Int? = nil) {
         self.fontFamily = fontFamily
         self.fontSize = fontSize
         self.theme = theme
@@ -77,6 +86,15 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.completedStatusColorHex = completedStatusColorHex
         self.configDirectory = configDirectory
         self.mouseScrollMultiplier = mouseScrollMultiplier
+        self.inactivePaneMuteStrength = inactivePaneMuteStrength
+    }
+
+    /// The SwiftUI overlay opacity for a given inactive-pane mute strength: the strength is clamped to
+    /// 0...10 and scaled by 0.08, so 0 → 0 (no mute), 5 → 0.4 (the historical default), 10 → 0.8
+    /// (extreme). The overlay is the terminal background color, so a higher opacity blends the pane's
+    /// text further toward the background (less bright) while leaving background pixels unchanged.
+    public static func muteOpacity(strength: Int) -> Double {
+        Double(min(10, max(0, strength))) * 0.08
     }
 
     /// The ghostty config lines for the set fields, one `key = value` per line, suitable for a

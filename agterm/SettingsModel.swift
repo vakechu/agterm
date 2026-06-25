@@ -42,6 +42,7 @@ final class SettingsModel {
         applyNotificationsEnabled()
         applyCompactToolbar()
         applyNotificationBadgeEnabled()
+        applyInactivePaneMute()
         applyAgentStatusColors()
         // create the commented starter keymap on first launch, then load + parse it.
         ensureStarterKeymap()
@@ -57,6 +58,7 @@ final class SettingsModel {
     func setCompactToolbar(_ value: Bool?) { settings.compactToolbar = value; persistAndApply() }
     func setNotificationBadgeEnabled(_ value: Bool?) { settings.notificationBadgeEnabled = value; persistAndApply() }
     func setMouseScrollMultiplier(_ value: Double?) { settings.mouseScrollMultiplier = value; persistAndApply() }
+    func setInactivePaneMuteStrength(_ value: Int?) { settings.inactivePaneMuteStrength = value; persistAndApply() }
     func setActiveStatusColorHex(_ hex: String?) { settings.activeStatusColorHex = hex; persistAndApply() }
     func setBlockedStatusColorHex(_ hex: String?) { settings.blockedStatusColorHex = hex; persistAndApply() }
     func setCompletedStatusColorHex(_ hex: String?) { settings.completedStatusColorHex = hex; persistAndApply() }
@@ -255,6 +257,7 @@ final class SettingsModel {
         applyNotificationsEnabled()
         applyCompactToolbar()
         applyNotificationBadgeEnabled()
+        applyInactivePaneMute()
         applyAgentStatusColors()
         // refresh the app chrome (title bar + sidebar + quick terminal) with the new terminal color,
         // window translucency, and toolbar style immediately, rather than only when the window next
@@ -277,6 +280,11 @@ final class SettingsModel {
 
     private func applyNotificationBadgeEnabled() {
         GhosttyApp.shared.setNotificationBadgeEnabled(settings.notificationBadgeEnabled ?? true)
+    }
+
+    private func applyInactivePaneMute() {
+        GhosttyApp.shared.setInactivePaneMuteStrength(
+            settings.inactivePaneMuteStrength ?? AppSettings.defaultInactivePaneMuteStrength)
     }
 
     private func applyAgentStatusColors() {

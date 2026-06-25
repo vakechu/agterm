@@ -135,6 +135,28 @@ struct AppSettingsTests {
         #expect(decoded.configDirectory == nil)
     }
 
+    @Test func inactivePaneMuteStrengthRoundTripsAndIsNotAConfigLine() throws {
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(AppSettings(inactivePaneMuteStrength: 7)))
+        #expect(decoded.inactivePaneMuteStrength == 7)
+        // SwiftUI overlay opacity applied in the app target, never a ghostty config key.
+        #expect(AppSettings(inactivePaneMuteStrength: 7).ghosttyConfigLines() == ["mouse-scroll-multiplier = 3"])
+    }
+
+    @Test func inactivePaneMuteStrengthDecodesNilWhenAbsent() throws {
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(#"{ "fontSize": 16 }"#.utf8))
+        #expect(decoded.inactivePaneMuteStrength == nil)
+    }
+
+    @Test func muteOpacityScalesAndClamps() {
+        #expect(AppSettings.muteOpacity(strength: 0) == 0)
+        #expect(AppSettings.muteOpacity(strength: 5) == 0.4)
+        #expect(AppSettings.muteOpacity(strength: 10) == 0.8)
+        // out-of-range strengths clamp to the 0...10 ends rather than over/undershooting.
+        #expect(AppSettings.muteOpacity(strength: -3) == 0)
+        #expect(AppSettings.muteOpacity(strength: 99) == 0.8)
+        #expect(AppSettings.defaultInactivePaneMuteStrength == 5)
+    }
+
     @Test func defaultThemeIsAgtermButNotBakedIntoAppSettings() {
         #expect(AppSettings.defaultTheme == "agterm")
         // the seed lives in SettingsStore.load, NOT the memberwise default — AppSettings() stays

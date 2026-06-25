@@ -42,6 +42,10 @@ final class GhosttyApp {
     /// sidebar Coordinator reads it (gating the count to 0 when off), `SettingsModel` writes it. The
     /// re-render rides the `.agtermAppearanceChanged` notification, like `compactToolbar`.
     private(set) var notificationBadgeEnabled: Bool = true
+    /// Inactive-split-pane text mute strength on the 0...10 scale. NOT ghostty-resolved: the detail
+    /// pane's `paneDim` overlay reads it (via `AppSettings.muteOpacity`), `SettingsModel` writes it. The
+    /// re-render rides the `.agtermAppearanceChanged` notification, like `compactToolbar`.
+    private(set) var inactivePaneMuteStrength: Int = AppSettings.defaultInactivePaneMuteStrength
     /// The agent-status glyph colors (active/blocked/completed). NOT ghostty-resolved: `StatusIconView`
     /// reads them when building the glyph, `SettingsModel` writes them (resolved from the user's hex or
     /// the system default). The sidebar re-render rides the `.agtermAppearanceChanged` notification.
@@ -111,6 +115,12 @@ final class GhosttyApp {
     /// and on every change; the sidebar re-reconcile rides the `.agtermAppearanceChanged` notification.
     func setNotificationBadgeEnabled(_ enabled: Bool) {
         notificationBadgeEnabled = enabled
+    }
+
+    /// Set the inactive-split-pane mute strength (0...10). Called by `SettingsModel` at launch and on
+    /// every change; the detail-pane re-render rides the `.agtermAppearanceChanged` notification.
+    func setInactivePaneMuteStrength(_ strength: Int) {
+        inactivePaneMuteStrength = strength
     }
 
     /// Set the agent-status glyph colors from the user's hex settings (nil/malformed → the system
