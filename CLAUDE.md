@@ -40,6 +40,7 @@ The app must build and `swift test` must stay green after every change.
 
 - `agtermCore` must not import GhosttyKit, AppKit, or Metal. Keeping it host-free is what lets `swift test` run with no app host. Model, persistence, and naming logic go here; the surface contract is the `TerminalSurface` protocol, which the app target's `GhosttySurfaceView` conforms to.
 - The app target owns all SwiftUI and libghostty code.
+- **Also keep `agtermCore` CoreGraphics-free — no `CGSize`/`CGPoint`/`CGRect`/`CGFloat`.** They're Foundation-reachable on Darwin and compile + `swift test` fine, but a CoreGraphics member reference (e.g. `CGSize.width`) in a Foundation-only module serializes as an unresolvable cross-reference that crashes the app target's **release** whole-module-optimizer SIL deserializer (`*** DESERIALIZATION FAILURE *** Cross-reference to module 'CoreFoundation'`, Xcode 26.5) — so it passes Debug + tests but breaks `make release`/`make deploy`. Use plain `Double`-backed structs in `agtermCore` (see `WindowGeometry.Size`/`Point`/`Rect`) and convert to/from CG at the app-target call site. Treat CoreGraphics geometry types as if they were on the banned list above.
 
 ## Sidebar
 
