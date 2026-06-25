@@ -119,6 +119,12 @@ targets:
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
+          # the app icon is the Icon Composer `AppIcon.icon`, compiled by actool into Assets.car +
+          # AppIcon.icns. xcodegen also lists it in Copy Bundle Resources, so a redundant loose
+          # AppIcon.icon lands in the bundle; remove it. A loose source `.icon` renders as the generic
+          # placeholder grid (so it must not win over the compiled icon), and its source xattrs would
+          # otherwise trip the re-seal below.
+          rm -rf "$CODESIGNING_FOLDER_PATH/Contents/Resources/AppIcon.icon"
           core="$SRCROOT/agtermCore"
           swift build --package-path "$core" -c release --product agtermctl
           src="$(swift build --package-path "$core" -c release --product agtermctl --show-bin-path)/agtermctl"

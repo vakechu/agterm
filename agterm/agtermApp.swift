@@ -592,14 +592,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // automatic tabbing removes AppKit's injected "Show Tab Bar" / "Show All Tabs" / "Move Tab to
         // New Window" menu items and the tab affordances. Must be set before any window is created.
         NSWindow.allowsAutomaticWindowTabbing = false
-        // a Debug app launched from DerivedData (ad-hoc signed) never hands the Dock a
-        // non-default tile icon via the usual runtime path. set it explicitly. load the
-        // artwork straight from the compiled asset catalog rather than via
-        // NSWorkspace.icon(forFile:), whose Icon Services cache is keyed by bundle path
-        // and the DerivedData path is reused across rebuilds, so it serves a stale tile.
-        if let icon = NSImage(named: "AppIcon") {
-            NSApp.applicationIconImage = icon
-        }
+        // NOTE: do NOT set NSApp.applicationIconImage. The app icon is the adaptive Icon Composer
+        // `AppIcon.icon`, which the system renders LIVE in the Dock with the current appearance
+        // (light/dark/clear/tinted, Liquid Glass). applicationIconImage takes a STATIC NSImage, so
+        // setting it (even from the compiled asset) freezes the Dock to one flat rendering and defeats
+        // the adaptive icon. Let LaunchServices render the bundle icon.
         restoreObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didFinishRestoringWindowsNotification,
             object: NSApp,
