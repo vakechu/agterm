@@ -1005,7 +1005,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
                          proposedItem item: Any?,
                          proposedChildIndex index: Int) -> NSDragOperation {
             if draggedWorkspaceID(from: info) != nil {
-                guard let move = resolveWorkspaceMove(from: info, item: item, childIndex: index) else { return [] }
+                guard let move = resolveWorkspaceMove(from: info, in: outlineView) else { return [] }
                 // workspace reorder lives at the top level: highlight a between-rows slot under the root.
                 outlineView.setDropItem(nil, dropChildIndex: move.dropChildIndex)
                 return .move
@@ -1021,7 +1021,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
                          item: Any?,
                          childIndex index: Int) -> Bool {
             if draggedWorkspaceID(from: info) != nil {
-                guard let move = resolveWorkspaceMove(from: info, item: item, childIndex: index) else { return false }
+                guard let move = resolveWorkspaceMove(from: info, in: outlineView) else { return false }
                 store.moveWorkspace(move.workspaceID, at: move.destination)
                 return true
             }
@@ -1056,21 +1056,30 @@ struct WorkspaceSidebar: NSViewRepresentable {
             return (sessionID, move.workspace, move.dropChildIndex, move.destination)
         }
 
-        /// Resolves a proposed workspace drop into the reorder it would perform, or nil when the drop is
-        /// invalid or a no-op (so both `validateDrop` and `acceptDrop` agree exactly). A workspace reorder
-        /// is valid ONLY at the top level — `item` must be nil (the root); a drop onto a session or into a
-        /// workspace's children is rejected. The index arithmetic defers to `SidebarDrop.resolveWorkspace`;
-        /// `dropChildIndex` is the PRE-removal highlight slot and `destination` the POST-removal index
-        /// `moveWorkspace` expects.
-        private func resolveWorkspaceMove(from info: NSDraggingInfo, item: Any?, childIndex index: Int)
+        /// Resolves a workspace drop into the top-level reorder it would perform, or nil when it is a no-op
+        /// (so `validateDrop` and `acceptDrop` agree exactly). A workspace reorder is a TOP-LEVEL move, but
+        /// with workspaces expanded their sessions fill the gaps between workspace rows, so `NSOutlineView`
+        /// only ever proposes drops INTO a workspace's children (`item != nil`) — never the clean root
+        /// between-rows slot — making the reorder impossible from the proposed `item`/`childIndex` alone.
+        /// Derive the insert slot from the cursor Y against the workspace ROWS' midpoints instead (sessions
+        /// ignored): the slot is the count of workspace rows whose midpoint sits above the cursor, so the
+        /// top half of a row drops before it and the bottom half after it. The index arithmetic (post-removal
+        /// off-by-one, no-op detection) defers to the host-free `SidebarDrop.resolveWorkspace`.
+        private func resolveWorkspaceMove(from info: NSDraggingInfo, in outlineView: NSOutlineView)
             -> (workspaceID: UUID, dropChildIndex: Int, destination: Int)? {
-            guard let workspaceID = draggedWorkspaceID(from: info) else { return nil }
-            // only a top-level drop is valid; reject dropping onto a session/workspace row or its children.
-            guard item == nil else { return nil }
-            guard let sourceIndex = store.workspaces.firstIndex(where: { $0.id == workspaceID }) else { return nil }
-
+            guard let workspaceID = draggedWorkspaceID(from: info),
+                  let sourceIndex = store.workspaces.firstIndex(where: { $0.id == workspaceID }) else { return nil }
+            let point = outlineView.convert(info.draggingLocation, from: nil)
+            var insertIndex = 0
+            for (i, workspace) in store.workspaces.enumerated() {
+                guard let node = workspaceNode(forID: workspace.id) else { continue }
+                let row = outlineView.row(forItem: node)
+                guard row >= 0 else { continue }
+                // the outline is flipped (y increases downward): a cursor below a row's midpoint lands after it.
+                if point.y > outlineView.rect(ofRow: row).midY { insertIndex = i + 1 }
+            }
             guard let move = SidebarDrop.resolveWorkspace(sourceIndex: sourceIndex, count: store.workspaces.count,
-                                                          childIndex: index) else { return nil }
+                                                          childIndex: insertIndex) else { return nil }
             return (workspaceID, move.dropChildIndex, move.destination)
         }
 

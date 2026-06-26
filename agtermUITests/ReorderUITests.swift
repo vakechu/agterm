@@ -70,6 +70,19 @@ final class ReorderUITests: XCTestCase {
                       "dragging workspace 3 above workspace 1 should reorder to [workspace 3, workspace 1, workspace 2]")
     }
 
+    // Drop a workspace onto a SESSION row that belongs to another workspace — the realistic case the
+    // edge-sliver test misses. With workspaces expanded (each holding sessions, like the real app), the
+    // space between workspace rows is filled with session rows, so a dragged workspace lands ON a session
+    // (or workspace) row, which AppKit proposes as `item != nil`. The original `guard item == nil` rejected
+    // every such drop (the reported "can't drag workspaces" bug). Dropping workspace 3 onto workspace 1's
+    // session row reorders it just after its owning workspace: [w1, w2, w3] → [w1, w3, w2].
+    func testReorderWorkspaceOntoSessionRow() throws {
+        seedThreeWorkspaces() // workspace 1 keeps the seeded session; 2 and 3 are empty
+        dragWorkspaceOntoSessionRow(named: "workspace 3")
+        XCTAssertTrue(pollWorkspaceNames(["workspace 1", "workspace 3", "workspace 2"], timeout: 10),
+                      "dropping workspace 3 onto workspace 1's session row should land it after workspace 1 → [w1, w3, w2]")
+    }
+
     // MARK: - Fixture
 
     /// Renames the seeded session to `names[0]` and adds one more renamed row per remaining name,
@@ -135,6 +148,21 @@ final class ReorderUITests: XCTestCase {
         let start = from.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         // the top sliver of the target → NSOutlineView proposes a drop above it at the top level.
         let end = to.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+        start.click(forDuration: 0.7, thenDragTo: end, withVelocity: 180, thenHoldForDuration: 0.25)
+    }
+
+    /// Drags the workspace row named `source` onto the CENTER of the seeded session row (which belongs to
+    /// workspace 1) — so the drop lands ON a session row (`item != nil`), the realistic case where a
+    /// workspace reorder must still work. Same gesture mechanics as `dragWorkspaceRow(named:toTopOf:)`.
+    private func dragWorkspaceOntoSessionRow(named source: String) {
+        let from = workspaceRow(named: source)
+        let to = sessionRow()
+        XCTAssertTrue(from.waitForHittable(timeout: 10), "\(source) row should be hittable to drag")
+        XCTAssertTrue(to.waitForHittable(timeout: 10), "the session row should be hittable as a drop target")
+        from.click()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        let start = from.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = to.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         start.click(forDuration: 0.7, thenDragTo: end, withVelocity: 180, thenHoldForDuration: 0.25)
     }
 
