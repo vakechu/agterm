@@ -278,10 +278,14 @@ struct agtermApp: App {
                 // single 2-state item like the sidebar/scratch toggles; keyless by default (rebindable
                 // via toggle_flagged_view). The control half is sidebar.mode.
                 let flaggedMode = library.activeStore?.sidebarMode == .flagged
+                // disabled (along with its shortcut) when there's nothing to show: tree mode + no flags.
+                // Enabled in flagged mode so it can always switch back to the tree.
+                let noFlaggedToShow = !flaggedMode && (library.activeStore?.flaggedSessions.isEmpty ?? true)
                 Button { actions.toggleFlaggedView() } label: {
                     Label(flaggedMode ? "Show All Sessions" : "Show Flagged Sessions", systemImage: "flag")
                 }
                 .keyboardShortcut(shortcut(for: .toggleFlaggedView))
+                .disabled(noFlaggedToShow)
                 let sessionFlagged = library.activeStore?.activeSession?.flagged == true
                 Button { actions.toggleFlagActiveSession() } label: {
                     Label(sessionFlagged ? "Unflag Session" : "Flag Session", systemImage: "flag.badge.ellipsis")

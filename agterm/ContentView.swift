@@ -854,6 +854,11 @@ private struct WindowContentView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
+            // nothing to show: disable entering an empty flagged view (tree mode + no flags). Stays
+            // enabled in flagged mode so the button can always switch back to the tree. The explicit
+            // chromeText foregroundStyle defeats SwiftUI's default disabled dimming, so mute it by hand.
+            .disabled(store.sidebarMode == .tree && store.flaggedSessions.isEmpty)
+            .opacity(store.sidebarMode == .tree && store.flaggedSessions.isEmpty ? 0.35 : 1)
             .help(store.sidebarMode == .flagged ? "Show all sessions" : "Show flagged sessions")
             .accessibilityLabel("Toggle Flagged View")
             .accessibilityIdentifier("flagged-view-toggle")

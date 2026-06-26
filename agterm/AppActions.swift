@@ -402,8 +402,6 @@ final class AppActions {
             PaletteItem(title: "Toggle Split", shortcut: paletteHint(for: .toggleSplit)) { [weak self] in self?.toggleSplit() },
             PaletteItem(title: "Toggle Scratch", shortcut: paletteHint(for: .toggleScratch)) { [weak self] in self?.toggleScratch() },
             PaletteItem(title: "Toggle Sidebar", shortcut: paletteHint(for: .toggleSidebar)) { [weak self] in self?.toggleSidebar() },
-            PaletteItem(title: store?.sidebarMode == .flagged ? "Show All Sessions" : "Show Flagged Sessions",
-                        shortcut: paletteHint(for: .toggleFlaggedView)) { [weak self] in self?.toggleFlaggedView() },
             PaletteItem(title: (store?.activeSession?.flagged == true) ? "Unflag Session" : "Flag Session",
                         shortcut: paletteHint(for: .toggleFlag)) { [weak self] in self?.toggleFlagActiveSession() },
             PaletteItem(title: "Focus Workspace",
@@ -419,6 +417,12 @@ final class AppActions {
         ]
         if store?.canRemoveWorkspace == true {
             items.append(PaletteItem(title: "Delete Workspace", shortcut: paletteHint(for: .deleteWorkspace)) { [weak self] in self?.deleteActiveWorkspace() })
+        }
+        // the flagged-view toggle: omitted when there's nothing to show (tree mode + no flags); always
+        // present in flagged mode so the palette can switch back to the tree.
+        if store?.sidebarMode == .flagged || store?.flaggedSessions.isEmpty == false {
+            items.append(PaletteItem(title: store?.sidebarMode == .flagged ? "Show All Sessions" : "Show Flagged Sessions",
+                                     shortcut: paletteHint(for: .toggleFlaggedView)) { [weak self] in self?.toggleFlaggedView() })
         }
         // plain (non-BuiltinAction) clear, shown only while the working-set is non-empty.
         if store?.flaggedSessions.isEmpty == false {

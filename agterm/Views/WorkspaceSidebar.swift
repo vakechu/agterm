@@ -627,9 +627,9 @@ struct WorkspaceSidebar: NSViewRepresentable {
             updateEmptyState()
         }
 
-        /// Adds the flagged-mode empty-state hint as a centered, non-scrolling overlay in the scroll view
-        /// (a sibling of the clip view, so it floats above the document and stays put). Hidden until the
-        /// flagged view is empty.
+        /// Adds the flagged-mode empty-state hint near the top of the scroll view (below the safe-area
+        /// inset, so it clears the titlebar) as a non-scrolling overlay (a sibling of the clip view, so it
+        /// floats above the document and stays put). Hidden until the flagged view is empty.
         func installEmptyState(in scroll: NSScrollView) {
             let label = NSTextField(wrappingLabelWithString: "No flagged sessions.\nRight-click a session → Flag.")
             label.translatesAutoresizingMaskIntoConstraints = false
@@ -643,7 +643,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
             scroll.addSubview(label)
             NSLayoutConstraint.activate([
                 label.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
-                label.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+                label.topAnchor.constraint(equalTo: scroll.safeAreaLayoutGuide.topAnchor, constant: 40),
                 label.leadingAnchor.constraint(greaterThanOrEqualTo: scroll.leadingAnchor, constant: 16),
                 label.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor, constant: -16),
             ])
