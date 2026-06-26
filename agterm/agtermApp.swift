@@ -266,6 +266,14 @@ struct agtermApp: App {
                     Label(sidebarShown ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
                 }
                 .keyboardShortcut(shortcut(for: .toggleSidebar))
+                // expand every workspace / collapse all but the active one. plain (non-BuiltinAction)
+                // keyless items like Reload Keymap; disabled with no active store or in flagged mode
+                // (no workspace rows to expand/collapse). The control half is sidebar.expand/collapse.
+                let treeMode = library.activeStore?.sidebarMode == .tree
+                Button { actions.expandAllWorkspaces() } label: { Label("Expand Workspaces", systemImage: "chevron.down") }
+                    .disabled(library.activeStore == nil || !treeMode)
+                Button { actions.collapseOtherWorkspaces() } label: { Label("Collapse Workspaces", systemImage: "chevron.right") }
+                    .disabled(library.activeStore == nil || !treeMode)
                 // flip the sidebar between the workspace tree and the flat flagged working-set list.
                 // single 2-state item like the sidebar/scratch toggles; keyless by default (rebindable
                 // via toggle_flagged_view). The control half is sidebar.mode.

@@ -13,7 +13,7 @@ when_to_use: >
   Trigger on: agterm, agtermctl, agterm control socket, session.new, session.close, session.type,
   session.split, session.scratch, session.focus, session.go, session.copy, session.search, session.status,
   session.flag, session.overlay, workspace.new, workspace.select, workspace.move, workspace.focus, window.new, window.list,
-  window.select, window.resize, window.move, quick terminal, sidebar, sidebar.mode, flagged, notify, font.inc, keymap.reload,
+  window.select, window.resize, window.move, quick terminal, sidebar, sidebar.mode, sidebar.expand, sidebar.collapse, flagged, notify, font.inc, keymap.reload,
   theme.set, theme.list, select theme, edit keymap, show an image, display an image inline, show-image,
   AGTERM_SESSION_ID, AGTERM_SOCKET, and asks to drive or script agterm.
 user-invocable: false
@@ -82,7 +82,7 @@ a global `--window <id|prefix|active>` to operate on a specific window's tree (d
 
 Scripts rarely type ids: create with `*.new` (capture the returned id), or act on `active`.
 
-## Command summary (42 commands)
+## Command summary (44 commands)
 
 Run `agtermctl <area> <cmd> --help` for exact flags. Full detail in **reference.md**; recipes in
 **examples.md**.
@@ -117,7 +117,10 @@ Run `agtermctl <area> <cmd> --help` for exact flags. Full detail in **reference.
 **quick** — `[show|hide|toggle]` — the window's quick terminal.
 
 **sidebar** — `[show|hide|toggle]` (visibility) · `mode [tree|flagged|toggle]` (flip between the
-workspace tree and the flat flagged working-set list) — the frontmost window's sidebar.
+workspace tree and the flat flagged working-set list) · `expand [--window W]` (expand every workspace) ·
+`collapse [--window W]` (collapse all workspaces except the active one, which stays expanded).
+Visibility/mode act on the frontmost window; `expand`/`collapse` default to the frontmost but take a
+`--window` selector to target any open window.
 
 **notify** — `notify <body> [--title T]` — post a desktop notification attributed to a session.
 

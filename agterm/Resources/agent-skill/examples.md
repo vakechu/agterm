@@ -127,6 +127,18 @@ agtermctl workspace focus toggle --target a1b2                # flip focus on an
 agtermctl workspace focus off                                 # restore the full tree
 ```
 
+## Expand or collapse the sidebar tree
+
+Open every workspace at once, or collapse all but the active one (the workspace of the active session,
+which stays expanded and scrolled into view) to cut clutter. Defaults to the frontmost window; pass
+`--window` to target any open window. A no-op in flagged mode.
+
+```bash
+agtermctl sidebar expand                                 # expand every workspace (frontmost window)
+agtermctl sidebar collapse                               # collapse all but the active workspace
+agtermctl sidebar collapse --window "$AGTERM_WINDOW_ID"  # collapse a specific window's sidebar
+```
+
 ## Copy a selection and reuse it
 
 `session copy` returns the selection as text (it does not use the system clipboard). Pipe it onward.

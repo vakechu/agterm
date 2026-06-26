@@ -741,6 +741,49 @@ final class ControlAPIUITests: XCTestCase {
         XCTAssertTrue((bad["error"] as? String ?? "").contains("invalid focus mode"), "should report invalid mode: \(bad)")
     }
 
+    // sidebar.collapse collapses every workspace except the active session's — the others' session rows
+    // leave the AX tree while the active workspace's stay; sidebar.expand re-expands every workspace and
+    // restores them.
+    func testSidebarExpandCollapse() throws {
+        XCTAssertTrue(app.staticTexts["session-row"].firstMatch.waitForExistence(timeout: 10), "seeded session row")
+
+        // capture the seeded workspace + session, name the session so it's findable by value.
+        let tree = try sendCommand(#"{"cmd":"tree"}"#)
+        let result = try XCTUnwrap(tree["result"] as? [String: Any], "tree should carry a result")
+        let t = try XCTUnwrap(result["tree"] as? [String: Any], "result should carry a tree")
+        let ws = try XCTUnwrap((t["workspaces"] as? [[String: Any]])?.first, "should have a workspace")
+        let seededID = try XCTUnwrap((ws["sessions"] as? [[String: Any]])?.first?["id"] as? String, "should have a seeded session")
+        XCTAssertEqual(try sendCommand(#"{"cmd":"session.rename","target":"\#(seededID)","args":{"name":"stay"}}"#)["ok"] as? Bool,
+                       true, "renaming the seeded session should succeed")
+
+        // add a second workspace with its own session in a different workspace.
+        let newWs = try sendCommand(#"{"cmd":"workspace.new","args":{"name":"second"}}"#)
+        let secondWsID = try XCTUnwrap((newWs["result"] as? [String: Any])?["id"] as? String, "workspace.new should return an id")
+        let created = try sendCommand(#"{"cmd":"session.new","args":{"workspace":"\#(secondWsID)"}}"#)
+        let newSessID = try XCTUnwrap((created["result"] as? [String: Any])?["id"] as? String, "session.new should return an id")
+        XCTAssertEqual(try sendCommand(#"{"cmd":"session.rename","target":"\#(newSessID)","args":{"name":"hidden"}}"#)["ok"] as? Bool,
+                       true, "renaming the new session should succeed")
+
+        // both rows present with both workspaces expanded (the sidebar expands all on launch).
+        XCTAssertTrue(pollSessionRowCount(2, timeout: 10), "both session rows should be present expanded")
+
+        // select the seeded session so the ACTIVE workspace is the first one, then collapse: the second
+        // workspace folds away (its "hidden" row leaves the AX tree) while the active workspace stays open.
+        XCTAssertEqual(try sendCommand(#"{"cmd":"session.select","target":"\#(seededID)"}"#)["ok"] as? Bool, true,
+                       "selecting the seeded session should succeed")
+        let collapse = try sendCommand(#"{"cmd":"sidebar.collapse"}"#)
+        XCTAssertEqual(collapse["ok"] as? Bool, true, "sidebar.collapse should succeed: \(collapse)")
+        XCTAssertTrue(pollSessionRowCount(1, timeout: 10), "collapse should hide the non-active workspace's rows")
+        XCTAssertTrue(sessionRowValueExists(containing: "stay"), "the active workspace's session should remain")
+        XCTAssertFalse(sessionRowValueExists(containing: "hidden"), "the collapsed workspace's session should be hidden")
+
+        // expand re-opens every workspace and restores both rows.
+        let expand = try sendCommand(#"{"cmd":"sidebar.expand"}"#)
+        XCTAssertEqual(expand["ok"] as? Bool, true, "sidebar.expand should succeed: \(expand)")
+        XCTAssertTrue(pollSessionRowCount(2, timeout: 10), "expand should restore every workspace's rows")
+        XCTAssertTrue(sessionRowValueExists(containing: "hidden"), "the collapsed workspace's session should return")
+    }
+
     /// Polls until the sidebar shows exactly `expected` `session-row` elements.
     private func pollSessionRowCount(_ expected: Int, timeout: TimeInterval) -> Bool {
         let rows = app.staticTexts.matching(identifier: "session-row")

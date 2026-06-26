@@ -608,7 +608,8 @@ public final class AppStore {
     /// is focused, else all sessions. Computed live (`visibleWorkspaces` already collapses to the
     /// focused workspace, or the full tree when unfocused / the focus id is stale), so clearing the
     /// flag/focus naturally restores the full set. Backs `navigateSession` (and via it `session.go`,
-    /// attention-nav) plus the Ctrl-Tab MRU candidate set, so all three follow the same filter.
+    /// attention-nav), the Ctrl-Tab MRU candidate set, AND the ⌃P session palette (`AppActions.
+    /// paletteSessions`), so all follow the same filter as the visible sidebar.
     public var navigableSessions: [Session] {
         sidebarMode == .flagged ? flaggedSessions : visibleWorkspaces.flatMap(\.sessions)
     }

@@ -275,6 +275,28 @@ struct ControlProtocolTests {
         #expect(decoded.cmd == .keymapReload)
     }
 
+    @Test func sidebarExpandCollapseRequestsRoundTrip() throws {
+        let cases = [
+            ControlRequest(cmd: .sidebarExpand),
+            ControlRequest(cmd: .sidebarCollapse),
+            ControlRequest(cmd: .sidebarExpand, args: ControlArgs(window: "abc")),
+            ControlRequest(cmd: .sidebarCollapse, args: ControlArgs(window: "abc")),
+        ]
+        for request in cases {
+            #expect(try roundTrip(request) == request)
+        }
+    }
+
+    @Test func sidebarExpandRawStringMapsToCommand() throws {
+        let decoded = try JSONDecoder().decode(ControlRequest.self, from: Data(#"{"cmd":"sidebar.expand"}"#.utf8))
+        #expect(decoded.cmd == .sidebarExpand)
+    }
+
+    @Test func sidebarCollapseRawStringMapsToCommand() throws {
+        let decoded = try JSONDecoder().decode(ControlRequest.self, from: Data(#"{"cmd":"sidebar.collapse"}"#.utf8))
+        #expect(decoded.cmd == .sidebarCollapse)
+    }
+
     @Test func responseOkWithCountRoundTrips() throws {
         let response = ControlResponse(ok: true, result: ControlResult(count: 3))
         let decoded = try roundTrip(response)

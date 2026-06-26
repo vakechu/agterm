@@ -31,6 +31,8 @@ public enum Command: String, Codable, Sendable {
     case quick
     case sidebar
     case sidebarMode = "sidebar.mode"
+    case sidebarExpand = "sidebar.expand"
+    case sidebarCollapse = "sidebar.collapse"
     case notify
     case fontInc = "font.inc"
     case fontDec = "font.dec"

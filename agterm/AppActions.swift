@@ -206,6 +206,39 @@ final class AppActions {
         store.setFocusedWorkspace(nil)
     }
 
+    // MARK: - Sidebar tree expansion
+
+    /// Expand every workspace in the frontmost window's sidebar (the GUI menu/palette target). No-op when
+    /// no window is open.
+    func expandAllWorkspaces() {
+        guard let store else { return }
+        expandAllWorkspaces(in: store)
+    }
+
+    /// Expand every workspace in `store`'s window's sidebar. The sidebar owns the outline, so this posts a
+    /// notification carrying that store as the object; `WorkspaceSidebar.Coordinator` registers its
+    /// observer with `object: store`, so only that one window's sidebar acts. A graceful no-op in flagged
+    /// mode (no workspace rows). The `sidebar.expand` control command targets a specific (default
+    /// frontmost) window's store this way.
+    func expandAllWorkspaces(in store: AppStore) {
+        NotificationCenter.default.post(name: .agtermExpandWorkspaces, object: store)
+    }
+
+    /// Collapse every workspace except the active one in the frontmost window's sidebar (the GUI
+    /// menu/palette target). No-op when no window is open.
+    func collapseOtherWorkspaces() {
+        guard let store else { return }
+        collapseOtherWorkspaces(in: store)
+    }
+
+    /// Collapse every workspace except the active one (the workspace of the active session) in `store`'s
+    /// window's sidebar, keeping that workspace expanded and scrolled into view. Scoped by the store
+    /// object to that window's Coordinator (see `expandAllWorkspaces(in:)`); a graceful no-op in flagged
+    /// mode. The `sidebar.collapse` control command targets a specific (default frontmost) window this way.
+    func collapseOtherWorkspaces(in store: AppStore) {
+        NotificationCenter.default.post(name: .agtermCollapseWorkspaces, object: store)
+    }
+
     // MARK: - Flagged working-set
 
     /// Toggle a session's flagged membership (the durable flagged working-set the flat sidebar view
@@ -395,6 +428,12 @@ final class AppActions {
         if store?.focusedWorkspaceID != nil {
             items.append(PaletteItem(title: "Clear Focus") { [weak self] in self?.clearFocus() })
         }
+        // plain (non-BuiltinAction) sidebar tree expand/collapse, tree mode only (no workspace rows in
+        // flagged mode), like the disabled-in-flagged menu items.
+        if store?.sidebarMode == .tree {
+            items.append(PaletteItem(title: "Expand Workspaces") { [weak self] in self?.expandAllWorkspaces() })
+            items.append(PaletteItem(title: "Collapse Workspaces") { [weak self] in self?.collapseOtherWorkspaces() })
+        }
         if store?.activeSession?.hasSplit == true {
             items.append(PaletteItem(title: "Focus Left Pane", shortcut: paletteHint(for: .focusLeftPane)) { [weak self] in self?.focusPane(.main) })
             items.append(PaletteItem(title: "Focus Right Pane", shortcut: paletteHint(for: .focusRightPane)) { [weak self] in self?.focusPane(.split) })
@@ -431,18 +470,20 @@ final class AppActions {
         return items
     }
 
-    /// Every open session across workspaces as palette items; choosing one selects it. The
-    /// subtitle leads with the owning workspace (so you can tell sessions of the same name apart,
-    /// and search by workspace) followed by the working directory.
+    /// The VISIBLE/FILTERED sessions as palette items (the ⌃P switcher); choosing one selects it. Scoped
+    /// to `navigableSessions` — the focused workspace's sessions when a workspace is focused, the flagged
+    /// set in flagged mode, else all — so the ⌃P list matches the sidebar (and the Ctrl-Tab MRU switcher
+    /// and `session.go` nav, which already filter the same way). The subtitle leads with the owning
+    /// workspace (so you can tell sessions of the same name apart, and search by workspace) followed by
+    /// the working directory.
     func paletteSessions() -> [PaletteItem] {
         guard let store else { return [] }
-        return store.workspaces.flatMap { workspace in
-            workspace.sessions.map { session in
-                let id = session.id
-                let subtitle = "\(workspace.name) · \(session.effectiveCwd)"
-                return PaletteItem(id: id.uuidString, title: session.displayName, subtitle: subtitle) {
-                    store.selectSession(id)
-                }
+        return store.navigableSessions.map { session in
+            let id = session.id
+            let workspaceName = store.workspace(forSession: id)?.name ?? ""
+            let subtitle = "\(workspaceName) · \(session.effectiveCwd)"
+            return PaletteItem(id: id.uuidString, title: session.displayName, subtitle: subtitle) {
+                store.selectSession(id)
             }
         }
     }

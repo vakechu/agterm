@@ -168,6 +168,19 @@ to the flagged sessions only; back in `tree` it spans the focused workspace's se
 or all sessions. The GUI half is the bottom-bar flag button, View ▸ Show Flagged / Show All, and the
 ⌃⇧P palette. Use with `session flag` to build and view a cross-workspace working set.
 
+`agtermctl sidebar expand [--window W]` — expand every workspace row in a window's sidebar tree.
+Defaults to the frontmost window; `--window` (id / prefix / `active`) targets any OPEN window, so a
+script can expand a background window's tree. Idempotent (a clean no-op when all are already expanded);
+a graceful no-op in `flagged` mode (no workspace rows); a named-but-closed window errors, and `no open
+window` when none is open. The GUI half (frontmost only) is View ▸ Expand Workspaces and the ⌃⇧P palette
+"Expand Workspaces".
+
+`agtermctl sidebar collapse [--window W]` — collapse every workspace EXCEPT the active one (the
+workspace of the active session), which stays expanded and is scrolled into view. Same `--window`
+selector and defaults as `expand`. Idempotent; a graceful no-op in `flagged` mode; a named-but-closed
+window errors, and `no open window` when none is open. The GUI half (frontmost only) is View ▸ Collapse
+Workspaces and the ⌃⇧P palette "Collapse Workspaces".
+
 ## notify
 
 `agtermctl notify <body> [--title T] [--target] [--window W]` — post a macOS desktop notification

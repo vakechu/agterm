@@ -379,6 +379,15 @@ struct WorkspaceSidebar: NSViewRepresentable {
                                                    name: .agtermBeginRenameSession, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(beginRenameWorkspaceNotified),
                                                    name: .agtermBeginRenameWorkspace, object: nil)
+            // expand/collapse target ONLY the frontmost window's sidebar: AppActions posts these with the
+            // frontmost store as the object, and registering with `object: store` lets NotificationCenter
+            // deliver only to the Coordinator whose store matches — so other windows' sidebars stay put.
+            // (The rename observers above are object: nil and self-scope via the selected-session guard;
+            // expand/collapse have no such natural per-window guard, so they scope by the store object.)
+            NotificationCenter.default.addObserver(self, selector: #selector(expandWorkspacesNotified),
+                                                   name: .agtermExpandWorkspaces, object: store)
+            NotificationCenter.default.addObserver(self, selector: #selector(collapseWorkspacesNotified),
+                                                   name: .agtermCollapseWorkspaces, object: store)
             // a theme change (new terminal foreground) re-tints the visible rows in place.
             NotificationCenter.default.addObserver(self, selector: #selector(appearanceChanged),
                                                    name: .agtermAppearanceChanged, object: nil)
@@ -430,6 +439,19 @@ struct WorkspaceSidebar: NSViewRepresentable {
         @objc private func beginRenameWorkspaceNotified() {
             guard let id = store.currentWorkspaceID, let node = nodeCache[id] else { return }
             DispatchQueue.main.async { [weak self] in self?.beginEditing(node: node) }
+        }
+
+        /// Expand every workspace in this window's sidebar. A graceful no-op in flagged mode (no workspace
+        /// rows), gated here so `expandAll`'s tracked-expansion seeding can't fire in flagged mode.
+        @objc private func expandWorkspacesNotified() {
+            guard store.sidebarMode == .tree else { return }
+            expandAll()
+        }
+
+        /// Collapse every workspace except the active one in this window's sidebar. `collapseOthers` gates
+        /// on tree mode itself, so flagged mode is a clean no-op.
+        @objc private func collapseWorkspacesNotified() {
+            collapseOthers()
         }
 
         // MARK: - Model rebuild
@@ -645,6 +667,29 @@ struct WorkspaceSidebar: NSViewRepresentable {
             guard let outline = outlineView else { return }
             for workspace in store.workspaces { expandedWorkspaceIDs.insert(workspace.id) }
             for node in roots where node.kind == .workspace { outline.expandItem(node) }
+        }
+
+        /// Collapses every workspace except the active one (the workspace of the active session,
+        /// `store.currentWorkspaceID`), keeping that one expanded and scrolling its row into view so it
+        /// stays visible. Updates the tracked expansion set to match (the expand/collapse delegate
+        /// callbacks also fire, but the explicit update keeps the set correct even if a state is unchanged).
+        /// Tree-mode only — no workspace rows exist in flagged mode, so it is a graceful no-op there.
+        func collapseOthers() {
+            guard let outline = outlineView, store.sidebarMode == .tree else { return }
+            let keepID = store.currentWorkspaceID
+            for node in roots where node.kind == .workspace {
+                if node.id == keepID {
+                    if !outline.isItemExpanded(node) { outline.expandItem(node) }
+                    expandedWorkspaceIDs.insert(node.id)
+                } else {
+                    if outline.isItemExpanded(node) { outline.collapseItem(node) }
+                    expandedWorkspaceIDs.remove(node.id)
+                }
+            }
+            // keep the active workspace's row on screen (mirrors syncSelection's scroll-into-view).
+            guard let keepID, let node = nodeCache[keepID] else { return }
+            let row = outline.row(forItem: node)
+            if row >= 0 { outline.scrollRowToVisible(row) }
         }
 
         func outlineViewItemDidExpand(_ notification: Notification) {
@@ -1325,4 +1370,9 @@ extension Notification.Name {
     /// workspace; `WorkspaceSidebar.Coordinator` observes these and begins editing the row.
     static let agtermBeginRenameSession = Notification.Name("agterm.beginRenameSession")
     static let agtermBeginRenameWorkspace = Notification.Name("agterm.beginRenameWorkspace")
+    /// Posted by the menu/palette/control channel to expand every workspace, or to collapse every
+    /// workspace except the active one. Posted with the frontmost window's `AppStore` as the object so
+    /// `WorkspaceSidebar.Coordinator` observes them scoped to that one window's sidebar.
+    static let agtermExpandWorkspaces = Notification.Name("agterm.expandWorkspaces")
+    static let agtermCollapseWorkspaces = Notification.Name("agterm.collapseWorkspaces")
 }

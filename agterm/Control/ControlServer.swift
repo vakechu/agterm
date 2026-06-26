@@ -498,6 +498,10 @@ final class ControlServer {
             return setSidebar(mode: request.args?.mode)
         case .sidebarMode:
             return setSidebarViewMode(mode: request.args?.mode)
+        case .sidebarExpand:
+            return expandWorkspaces(window: request.args?.window)
+        case .sidebarCollapse:
+            return collapseWorkspaces(window: request.args?.window)
         case .notify:
             return sendNotification(request.target, window: request.args?.window,
                                     title: request.args?.title, body: request.args?.body)
@@ -805,6 +809,36 @@ final class ControlServer {
         }
         store.setSidebarMode(want) // no-op + no save when unchanged (idempotent)
         return ControlResponse(ok: true)
+    }
+
+    /// Expand every workspace in a window's sidebar tree — the `--window` selector picks the (OPEN) target,
+    /// defaulting to the frontmost window (a graceful no-op in flagged mode, which has no workspace rows).
+    /// Drives `AppActions.expandAllWorkspaces(in:)` (the same path the View menu / palette drive on the
+    /// frontmost). Idempotent (expanding when all are already expanded is a clean no-op); a named-but-closed
+    /// window errors, and no open window at all errors rather than silently no-opping.
+    private func expandWorkspaces(window: String?) -> ControlResponse {
+        if trimmed(window) == nil, library.activeStore == nil {
+            return ControlResponse(ok: false, error: "no open window")
+        }
+        return resolvePlacementStore(window) { store in
+            actions.expandAllWorkspaces(in: store)
+            return ControlResponse(ok: true)
+        }
+    }
+
+    /// Collapse every workspace except the active one (the active session's workspace) in a window's
+    /// sidebar, keeping that workspace expanded and scrolled into view. The `--window` selector picks the
+    /// (OPEN) target, defaulting to the frontmost. Drives `AppActions.collapseOtherWorkspaces(in:)`.
+    /// Graceful no-op in flagged mode; idempotent; a named-but-closed window errors, and no open window
+    /// at all errors.
+    private func collapseWorkspaces(window: String?) -> ControlResponse {
+        if trimmed(window) == nil, library.activeStore == nil {
+            return ControlResponse(ok: false, error: "no open window")
+        }
+        return resolvePlacementStore(window) { store in
+            actions.collapseOtherWorkspaces(in: store)
+            return ControlResponse(ok: true)
+        }
     }
 
     /// Resolve the target session and run a font binding action on its surface (targets a specific

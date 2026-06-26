@@ -649,7 +649,7 @@ struct Quick: RequestCommand {
 struct Sidebar: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Sidebar visibility and view mode.",
-        subcommands: [Visibility.self, Mode.self],
+        subcommands: [Visibility.self, Mode.self, Expand.self, Collapse.self],
         defaultSubcommand: Visibility.self
     )
 
@@ -682,6 +682,25 @@ struct Sidebar: ParsableCommand {
         func makeRequest() throws -> ControlRequest {
             ControlRequest(cmd: .sidebarMode, args: ControlArgs(mode: mode))
         }
+    }
+
+    /// `agtermctl sidebar expand [--window W]` — expand every workspace in a window's sidebar tree
+    /// (defaults to the frontmost). Unlike `visibility`/`mode`, this carries the `--window` selector so a
+    /// script can expand a background window's tree.
+    struct Expand: RequestCommand {
+        static let configuration = CommandConfiguration(abstract: "Expand every workspace in the sidebar.")
+        @OptionGroup var options: ClientOptions
+
+        func makeRequest() throws -> ControlRequest { ControlRequest(cmd: .sidebarExpand, args: options.withWindow()) }
+    }
+
+    /// `agtermctl sidebar collapse [--window W]` — collapse every workspace except the active one (it
+    /// stays expanded) in a window's sidebar (defaults to the frontmost).
+    struct Collapse: RequestCommand {
+        static let configuration = CommandConfiguration(abstract: "Collapse all workspaces except the active one.")
+        @OptionGroup var options: ClientOptions
+
+        func makeRequest() throws -> ControlRequest { ControlRequest(cmd: .sidebarCollapse, args: options.withWindow()) }
     }
 }
 

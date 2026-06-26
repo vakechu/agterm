@@ -350,6 +350,24 @@ struct CommandsTests {
         #expect(throws: (any Error).self) { try Agtermctl.parseAsRoot(["sidebar", "mode", "sideways"]) }
     }
 
+    @Test func sidebarExpand() throws {
+        #expect(try request(["sidebar", "expand"]) == ControlRequest(cmd: .sidebarExpand))
+    }
+
+    @Test func sidebarCollapse() throws {
+        #expect(try request(["sidebar", "collapse"]) == ControlRequest(cmd: .sidebarCollapse))
+    }
+
+    @Test func sidebarExpandWithWindow() throws {
+        #expect(try request(["sidebar", "expand", "--window", "abc"]) ==
+            ControlRequest(cmd: .sidebarExpand, args: ControlArgs(window: "abc")))
+    }
+
+    @Test func sidebarCollapseWithWindow() throws {
+        #expect(try request(["sidebar", "collapse", "--window", "abc"]) ==
+            ControlRequest(cmd: .sidebarCollapse, args: ControlArgs(window: "abc")))
+    }
+
     @Test func sessionFlagDefaultsToggle() throws {
         #expect(try request(["session", "flag"]) == ControlRequest(cmd: .sessionFlag, target: "active", args: ControlArgs(mode: "toggle")))
     }
