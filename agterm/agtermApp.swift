@@ -320,24 +320,22 @@ struct agtermApp: App {
                 Button { actions.toggleSearch() } label: { Label("Find…", systemImage: "magnifyingglass") }
                     .keyboardShortcut(shortcut(for: .toggleSearch))
                     .disabled(library.activeStore?.activeSession == nil)
-                // arrow-bound actions: their default ⌘⌥←/→ can't round-trip through the keymap grammar
-                // (parseKeybind has no arrow keys), so defaultChord is nil and the hardcoded arrow is the
-                // FALLBACK — a user override (a parseable chord) wins. arrowShortcut(for:) owns the four
-                // fallbacks in one place.
-                Button { actions.focusPane(.main) } label: {
-                    Label("Focus Left Pane", systemImage: "rectangle.lefthalf.filled")
-                }
-                .keyboardShortcut(arrowShortcut(for: .focusLeftPane))
-                .disabled(library.activeStore?.activeSession?.hasSplit != true)
-                Button { actions.focusPane(.split) } label: {
-                    Label("Focus Right Pane", systemImage: "rectangle.righthalf.filled")
-                }
-                .keyboardShortcut(arrowShortcut(for: .focusRightPane))
-                .disabled(library.activeStore?.activeSession?.hasSplit != true)
+                Button { actions.toggleQuickTerminal() } label: { Label("Quick Terminal", systemImage: "terminal") }
+                    .keyboardShortcut(shortcut(for: .quickTerminal))
+            }
+            // a dedicated Navigate menu keeps the View menu scannable: moving the selection/focus between
+            // existing sessions and split panes lives here — the palettes that jump to a session/command,
+            // the spatial session stepping, and the pane focus. all drive the SAME AppActions the View items
+            // did; only their menu home changed (the control API / palette / keymap surfaces are untouched).
+            CommandMenu("Navigate") {
+                Button { palette.toggle(.sessions) } label: { Label("Go to Session", systemImage: "rectangle.stack") }
+                    .keyboardShortcut(shortcut(for: .sessionPalette))
+                Button { palette.toggle(.actions) } label: { Label("Command Palette", systemImage: "command") }
+                    .keyboardShortcut(shortcut(for: .commandPalette))
                 Divider()
                 // step between sessions in the sidebar's flattened order. Prev/Next ride ⌥⌘↑/↓ (NOT bare
                 // ⌘+arrows, which shadow text-field caret nav in the rename/palette/settings fields); ⌥⌘↑/↓
-                // sessions complements the ⌥⌘←/→ pane focus above (left/right = panes, up/down = sessions).
+                // sessions complements the ⌥⌘←/→ pane focus below (left/right = panes, up/down = sessions).
                 // First/Last get no key (menu + palette + control only). Real menu items so AppKit menu
                 // dispatch swallows the shortcut before libghostty — never leaked to the shell.
                 Button { actions.selectPreviousSession() } label: { Label("Previous Session", systemImage: "chevron.up") }
@@ -354,19 +352,27 @@ struct agtermApp: App {
                 Button { actions.selectNextAttentionSession() } label: { Label("Next Attention Session", systemImage: "chevron.down.circle") }
                     .keyboardShortcut(arrowShortcut(for: .nextAttentionSession))
                     .disabled(library.activeStore?.activeSession == nil)
-                Button { actions.selectFirstSession() } label: { Label("First Session", systemImage: "chevron.up.to.line") }
+                Button { actions.selectFirstSession() } label: { Label("First Session", systemImage: "arrow.up.to.line") }
                     .keyboardShortcut(shortcut(for: .firstSession))
                     .disabled(library.activeStore?.activeSession == nil)
-                Button { actions.selectLastSession() } label: { Label("Last Session", systemImage: "chevron.down.to.line") }
+                Button { actions.selectLastSession() } label: { Label("Last Session", systemImage: "arrow.down.to.line") }
                     .keyboardShortcut(shortcut(for: .lastSession))
                     .disabled(library.activeStore?.activeSession == nil)
                 Divider()
-                Button { actions.toggleQuickTerminal() } label: { Label("Quick Terminal", systemImage: "terminal") }
-                    .keyboardShortcut(shortcut(for: .quickTerminal))
-                Button { palette.toggle(.sessions) } label: { Label("Go to Session", systemImage: "rectangle.stack") }
-                    .keyboardShortcut(shortcut(for: .sessionPalette))
-                Button { palette.toggle(.actions) } label: { Label("Command Palette", systemImage: "command") }
-                    .keyboardShortcut(shortcut(for: .commandPalette))
+                // arrow-bound actions: their default ⌘⌥←/→ can't round-trip through the keymap grammar
+                // (parseKeybind has no arrow keys), so defaultChord is nil and the hardcoded arrow is the
+                // FALLBACK — a user override (a parseable chord) wins. arrowShortcut(for:) owns the four
+                // fallbacks in one place.
+                Button { actions.focusPane(.main) } label: {
+                    Label("Focus Left Pane", systemImage: "rectangle.lefthalf.filled")
+                }
+                .keyboardShortcut(arrowShortcut(for: .focusLeftPane))
+                .disabled(library.activeStore?.activeSession?.hasSplit != true)
+                Button { actions.focusPane(.split) } label: {
+                    Label("Focus Right Pane", systemImage: "rectangle.righthalf.filled")
+                }
+                .keyboardShortcut(arrowShortcut(for: .focusRightPane))
+                .disabled(library.activeStore?.activeSession?.hasSplit != true)
             }
             CommandGroup(replacing: .help) {
                 Button("Developer Documentation…") {
