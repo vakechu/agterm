@@ -1,0 +1,62 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      swift: ${{ steps.filter.outputs.swift }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            swift:
+              - "**/*.swift"
+              - "agtermCore/**"
+              - "agterm/**"
+              - "project.yml"
+              - "scripts/**"
+              - ".github/workflows/ci.yml"
+
+  test:
+    name: Unit tests
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: swift test
+        working-directory: agtermCore
+        run: swift test
+
+  build:
+    name: Build app
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: Cache libghostty (GhosttyKit + resources)
+        uses: actions/cache@v6
+        with:
+          path: |
+            GhosttyKit.xcframework
+            agterm/Resources/ghostty
+            agterm/Resources/terminfo
+          key: ghosttykit-${{ hashFiles('scripts/setup.sh') }}
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Build libghostty + app (Release)
+        run: scripts/build.sh
