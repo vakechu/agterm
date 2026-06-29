@@ -291,12 +291,12 @@ public final class AppStore {
     public func toggleSplit(_ sessionID: UUID) {
         guard let session = session(withID: sessionID) else { return }
         session.isSplit.toggle()
-        // opening marks the session as having a split and moves focus to the new (right) pane; hiding
-        // (toggling off) leaves `hasSplit` and `splitFocused` set so the split indicators persist and
-        // the focused pane is the one shown maximized. Only `closeSplit` clears them.
+        // opening marks the session as having a split but KEEPS focus on the current pane (it does not
+        // touch `splitFocused`), so creating a split doesn't yank you into the new pane. Hiding (toggling
+        // off) leaves `hasSplit` and `splitFocused` set so the split indicators persist and the focused
+        // pane is the one shown maximized. Only `closeSplit` clears them.
         if session.isSplit {
             session.hasSplit = true
-            session.splitFocused = true
         }
         save()
     }

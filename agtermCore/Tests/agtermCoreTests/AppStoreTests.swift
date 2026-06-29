@@ -381,12 +381,17 @@ struct AppStoreTests {
         store.toggleSplit(session.id)
         #expect(session.isSplit == true)
         #expect(session.hasSplit == true)
-        #expect(session.splitFocused == true)  // opening focuses the new (right) pane
+        #expect(session.splitFocused == false)  // opening keeps focus on the current (primary) pane
         store.toggleSplit(session.id)
         #expect(session.isSplit == false)
-        // hiding the split keeps hasSplit so the sidebar/title split indicators persist, and keeps
-        // splitFocused so the focused pane is the one shown maximized.
+        // hiding the split keeps hasSplit so the sidebar/title split indicators persist, and leaves
+        // splitFocused untouched so the focused pane is the one shown maximized.
         #expect(session.hasSplit == true)
+        #expect(session.splitFocused == false)
+        // re-showing leaves splitFocused as the user last set it (untouched), so a split never yanks focus.
+        session.splitFocused = true
+        store.toggleSplit(session.id)
+        #expect(session.isSplit == true)
         #expect(session.splitFocused == true)
     }
 

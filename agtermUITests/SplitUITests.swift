@@ -4,7 +4,7 @@ import XCTest
 /// `GhosttySurfaceView`s with no readable accessibility text, so this uses the terminal
 /// itself as the oracle: each pane's shell has a distinct `tty`, so typing `tty > file`
 /// in the focused pane records which shell received the keystrokes. That verifies the
-/// split opens a separate shell, that opening moves focus to the new right pane, that the
+/// split opens a separate shell, that opening keeps focus on the primary pane, that the
 /// keyboard nav (⌘⌥←/→) moves focus between panes, and that closing keeps the focused pane.
 @MainActor
 final class SplitUITests: XCTestCase {
@@ -41,14 +41,18 @@ final class SplitUITests: XCTestCase {
         let primaryTTY = ttyAfterCommand(named: "primary")
         XCTAssertNotNil(primaryTTY, "primary shell should write its tty (terminal must be focused)")
 
-        // 2. open the split — focus MOVES to the new (right) pane, a separate shell.
+        // 2. open the split — focus STAYS on the current (primary) pane; a second shell is created.
         let splitButton = app.buttons["split-toggle"]
         XCTAssertTrue(splitButton.waitForExistence(timeout: 5), "split toolbar button should exist")
         splitButton.click()
         usleep(800_000)
-        let rightTTY = ttyAfterCommand(named: "afteropen")
+        XCTAssertEqual(ttyAfterCommand(named: "afteropen"), primaryTTY, "opening the split keeps focus on the primary pane")
+        // focus the new right pane and record its (distinct) shell tty.
+        app.typeKey(.rightArrow, modifierFlags: [.command, .option])
+        usleep(500_000)
+        let rightTTY = ttyAfterCommand(named: "right-open")
         XCTAssertNotNil(rightTTY, "right shell should write its tty")
-        XCTAssertNotEqual(rightTTY, primaryTTY, "opening the split moves focus to the new (right) pane")
+        XCTAssertNotEqual(rightTTY, primaryTTY, "the split's right pane is a separate shell")
 
         // 3. Cmd+Opt+Left focuses the primary pane again.
         app.typeKey(.leftArrow, modifierFlags: [.command, .option])
@@ -81,24 +85,29 @@ final class SplitUITests: XCTestCase {
         let primaryTTY = ttyAfterCommand(named: "primary")
         XCTAssertNotNil(primaryTTY, "primary shell should write its tty")
 
-        // open the split — focus moves to the new (right) pane.
+        // open the split — focus STAYS on the primary pane.
         let splitButton = app.buttons["split-toggle"]
         XCTAssertTrue(splitButton.waitForExistence(timeout: 5), "split toolbar button should exist")
         splitButton.click()
         usleep(800_000)
-        let rightTTY = ttyAfterCommand(named: "right")
+        XCTAssertEqual(ttyAfterCommand(named: "afteropen"), primaryTTY, "opening the split keeps focus on the primary pane")
+
+        // Ctrl-2 focuses the split (right) pane — a separate shell.
+        app.typeKey("2", modifierFlags: .control)
+        usleep(500_000)
+        let rightTTY = ttyAfterCommand(named: "ctrl2")
         XCTAssertNotNil(rightTTY, "right shell should write its tty")
-        XCTAssertNotEqual(rightTTY, primaryTTY, "opening the split moves focus to the new (right) pane")
+        XCTAssertNotEqual(rightTTY, primaryTTY, "Ctrl-2 focuses the separate split pane")
 
         // Ctrl-1 focuses the primary pane.
         app.typeKey("1", modifierFlags: .control)
         usleep(500_000)
         XCTAssertEqual(ttyAfterCommand(named: "ctrl1"), primaryTTY, "Ctrl-1 focuses the primary pane")
 
-        // Ctrl-2 focuses the split (right) pane.
+        // Ctrl-2 again focuses the split (right) pane.
         app.typeKey("2", modifierFlags: .control)
         usleep(500_000)
-        XCTAssertEqual(ttyAfterCommand(named: "ctrl2"), rightTTY, "Ctrl-2 focuses the split pane")
+        XCTAssertEqual(ttyAfterCommand(named: "ctrl2-again"), rightTTY, "Ctrl-2 focuses the split pane")
     }
 
     // Ctrl-1 / Ctrl-2 are reserved app shortcuts: in a non-split session they must be consumed (no-op),
@@ -165,14 +174,18 @@ final class SplitUITests: XCTestCase {
         let primaryTTY = ttyAfterCommand(named: "primary")
         XCTAssertNotNil(primaryTTY, "primary shell should write its tty")
 
-        // open the split — focus moves to the new (right) pane.
+        // open the split — focus stays on the primary pane.
         let splitButton = app.buttons["split-toggle"]
         XCTAssertTrue(splitButton.waitForExistence(timeout: 5), "split toolbar button should exist")
         splitButton.click()
         usleep(800_000)
+
+        // focus the right pane so it's the one shown maximized when hidden.
+        app.typeKey(.rightArrow, modifierFlags: [.command, .option])
+        usleep(500_000)
         let rightTTY = ttyAfterCommand(named: "right")
         XCTAssertNotNil(rightTTY, "right shell should write its tty")
-        XCTAssertNotEqual(rightTTY, primaryTTY, "opening the split moves focus to the new (right) pane")
+        XCTAssertNotEqual(rightTTY, primaryTTY, "the split's right pane is a separate shell")
 
         // hide the split — the focused (right) pane stays shown maximized, both shells alive.
         splitButton.click()
