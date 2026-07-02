@@ -75,7 +75,15 @@ Download the latest `.dmg` from the [releases page](https://github.com/umputun/a
 xattr -cr /Applications/agterm.app
 ```
 
-(Or try to open it, then click **Open Anyway** in **System Settings → Privacy & Security**. Right-click → Open no longer bypasses Gatekeeper on current macOS.) To put the `agtermctl` CLI on your `PATH`, use **Help ▸ Install Command Line Tool…** from the app.
+(Or try to open it, then click **Open Anyway** in **System Settings → Privacy & Security**. Right-click → Open no longer bypasses Gatekeeper on current macOS.)
+
+### Optional Help-menu installers
+
+The app's **Help** menu has three one-time installers. None are needed to use agterm as a terminal; each connects it to a wider workflow, and you can run any of them later.
+
+- **Install Command Line Tool…** puts the bundled `agtermctl` on your `PATH` (a symlink in `/usr/local/bin`) so you can script the app from a shell. The Homebrew cask already installs it, so cask users can skip this one. See [Scripting agterm](#scripting-agterm).
+- **Install Agent Status Hooks…** lets a coding agent (Claude Code, Codex, or others) report its state onto its session's sidebar row, so you can tell at a glance which of several running agents is active, blocked, or finished. See [Agent status](#agent-status).
+- **Install Agent Skill…** teaches Claude Code or Codex how to drive agterm through `agtermctl`, so an agent running inside a session can build its own layout, run overlays, and manage windows without you explaining the API. It drives the app through the command-line tool, so install that one too.
 
 ## Build from source
 
