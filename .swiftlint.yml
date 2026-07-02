@@ -1,7 +1,7 @@
 # swiftlint config for agterm — tailored, low-noise.
 # philosophy: disable only rules that fight deliberate project conventions; keep every
-# rule that surfaces a real, fixable finding on; grandfather size limits on big-by-design
-# files (refactoring them is out of scope) so only NEW growth warns.
+# rule that surfaces a real, fixable finding on; hold source files under 1000 lines and
+# test files under 2000 (via nested configs in agtermUITests/ and agtermCore/Tests/).
 
 excluded:
   - build                       # xcodebuild DerivedData
@@ -29,15 +29,15 @@ line_length:
   ignores_comments: true
   ignores_urls: true
 
-# big-by-design: the 44-arm control dispatch, the eager-deck ContentView/surface views,
-# and the large XCUITest/unit suites. limits sit just above today's maxima so the repo is
-# clean now and only further growth warns.
+# size limits: source files stay under 1000 lines, source type bodies under 800.
+# the biggest source file is agterm/Ghostty/GhosttySurfaceView.swift; test files get a
+# 2000-line budget via nested configs (agtermUITests/, agtermCore/Tests/).
 file_length:
-  warning: 2700
-  error: 3000
+  warning: 1000
+  error: 1100
 type_body_length:
-  warning: 1850
-  error: 2500
+  warning: 800
+  error: 1000
 function_body_length:
   warning: 250
   error: 400

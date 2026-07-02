@@ -1,0 +1,309 @@
+import Foundation
+import agtermCore
+
+/// `ControlServer` surface-I/O action arms — font size, selection copy, background watermark, buffer read,
+/// in-terminal search, and text injection. These reach into the live `GhosttySurfaceView`, so they own the
+/// surface-touching half of the dispatch. Split out of `ControlServer.swift` for the swiftlint size limit.
+extension ControlServer {
+    /// Resolve the target session and run a font binding action on its surface (targets a specific
+    /// surface, unlike the menu path which only hits the focused one). A never-shown session has no
+    /// surface yet → error.
+    func font(_ target: String?, window: String?, action: String) -> ControlResponse {
+        return resolver.resolveSession(target, window: window) { store, id in
+            guard let surface = store.session(withID: id)?.surface as? GhosttySurfaceView else {
+                return ControlResponse(ok: false, error: "session not realized")
+            }
+            surface.performBindingAction(action)
+            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
+        }
+    }
+
+    /// Resolve the target session and return its surface's current selection text in the response (it does
+    /// NOT write the system clipboard — automation pipes the returned text into another `session.type`). A
+    /// never-shown session has no surface yet → error; an empty or absent selection → "no selection".
+    func copySelection(_ target: String?, window: String?) -> ControlResponse {
+        return resolver.resolveSession(target, window: window) { store, id in
+            guard let surface = store.session(withID: id)?.surface as? GhosttySurfaceView else {
+                return ControlResponse(ok: false, error: "session not realized")
+            }
+            guard let text = surface.readSelection() else {
+                return ControlResponse(ok: false, error: "no selection")
+            }
+            return ControlResponse(ok: true, result: ControlResult(text: text))
+        }
+    }
+
+    /// Set or clear a session's background watermark (`session.background`, mode `image|text|clear`):
+    /// validate the inputs (shared `WatermarkConfig` enum checks; image format + existence), build the
+    /// `BackgroundWatermark` spec (nil for `clear`), persist it on the session (`AppStore`, so it rides
+    /// `SessionSnapshot`), then apply it to the session's realized surface(s). A never-shown session keeps
+    /// the spec and applies it itself when its surface is created. Returns the session id.
+    func setBackground(_ target: String?, _ args: ControlArgs?) -> ControlResponse {
+        // the args bag IS the option struct — unpack the watermark fields once so the arm stays a small
+        // fixed-arity signature (swiftlint function_parameter_count) rather than a 10-parameter dispatch.
+        let window = args?.window, mode = args?.mode, path = args?.path, text = args?.text
+        let color = args?.color, opacity = args?.opacity, fit = args?.fit
+        let position = args?.position, repeats = args?.repeats
+        if let fit, !WatermarkConfig.isValidFit(fit) {
+            return ControlResponse(ok: false, error: "invalid fit: \(fit) (contain|cover|stretch|none)")
+        }
+        if let position, !WatermarkConfig.isValidPosition(position) {
+            return ControlResponse(ok: false, error: "invalid position: \(position)")
+        }
+        if let opacity, !WatermarkConfig.isValidOpacity(opacity) {
+            return ControlResponse(ok: false, error: "invalid opacity: \(opacity) (0.0-1.0)")
+        }
+        let watermark: BackgroundWatermark?
+        switch mode {
+        case "image":
+            guard let path, !path.isEmpty else {
+                return ControlResponse(ok: false, error: "session.background image requires a path")
+            }
+            guard WatermarkConfig.isValidImagePath(path) else {
+                return ControlResponse(ok: false, error: "image path must not contain control characters")
+            }
+            guard WatermarkRenderer.isSupportedImage(path) else {
+                return ControlResponse(ok: false, error: "unsupported image (PNG or JPEG only): \(path)")
+            }
+            guard FileManager.default.fileExists(atPath: path) else {
+                return ControlResponse(ok: false, error: "no such image file: \(path)")
+            }
+            watermark = BackgroundWatermark(kind: .image, imagePath: path, opacity: opacity,
+                                            fit: fit.flatMap(BackgroundWatermark.Fit.init(rawValue:)),
+                                            position: position.flatMap(BackgroundWatermark.Position.init(rawValue:)),
+                                            repeats: repeats)
+        case "text":
+            guard let text, !text.isEmpty else {
+                return ControlResponse(ok: false, error: "session.background text requires text")
+            }
+            guard text.count <= WatermarkConfig.maxTextLength else {
+                return ControlResponse(ok: false,
+                                       error: "session.background text too long (max \(WatermarkConfig.maxTextLength) characters)")
+            }
+            if let color, !WatermarkConfig.isValidColorHex(color) {
+                return ControlResponse(ok: false, error: "invalid color: \(color) (#rrggbb)")
+            }
+            watermark = BackgroundWatermark(kind: .text, text: text, colorHex: color,
+                                            opacity: opacity,
+                                            fit: fit.flatMap(BackgroundWatermark.Fit.init(rawValue:)),
+                                            position: position.flatMap(BackgroundWatermark.Position.init(rawValue:)))
+        case "color":
+            // no per-call opacity: a solid color honors the window translucency set in Settings, applied at
+            // emit time via `WatermarkConfig.overlayText(windowOpacity:)` (see `GhosttySurfaceView`).
+            guard let color, !color.isEmpty else {
+                return ControlResponse(ok: false, error: "session.background color requires a color")
+            }
+            guard WatermarkConfig.isValidColorHex(color) else {
+                return ControlResponse(ok: false, error: "invalid color: \(color) (#rrggbb)")
+            }
+            watermark = BackgroundWatermark(kind: .color, colorHex: color)
+        case "clear", .none:
+            watermark = nil
+        default:
+            return ControlResponse(ok: false, error: "invalid background mode: \(mode ?? "") (image|text|color|clear)")
+        }
+        return resolver.resolveSession(target, window: window) { store, id in
+            guard let session = store.session(withID: id) else {
+                return ControlResponse(ok: false, error: "no such session")
+            }
+            // gate on a real change: applyWatermark RETAINS a per-surface config freed only on teardown, so
+            // re-applying an unchanged spec (a scripted set-loop) would leak owned configs. The store no-ops
+            // its own write the same way.
+            guard store.setBackgroundWatermark(watermark, forSession: id) else {
+                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
+            }
+            // clearing a `.text` watermark drops its rendered PNG so the state dir doesn't accumulate.
+            if watermark == nil { WatermarkStorage.removeRenderedText(sessionID: id) }
+            applyWatermark(to: session)
+            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
+        }
+    }
+
+    /// Apply a session's current watermark spec to its realized main + split surfaces. A never-realized
+    /// surface (nil) is skipped — it applies the spec itself on creation (`GhosttySurfaceView.createSurface`).
+    private func applyWatermark(to session: Session) {
+        for surface in [session.surface, session.splitSurface] {
+            (surface as? GhosttySurfaceView)?.applyWatermarkFromSession()
+        }
+    }
+
+    /// Returns a pane's terminal buffer as plain text: the visible screen by default, the full screen plus
+    /// scrollback with `all`, or the last `lines` lines (reads the screen, then trims). `pane` picks the
+    /// surface (`left` main, `right` split, or the on-screen pane when omitted); `right` errors when the
+    /// session has no split. `all` and `lines` are mutually exclusive and `lines` must be > 0 — validated
+    /// here too, not only in the CLI `validate()`, so a raw socket client can't bypass it (an unchecked
+    /// `lines <= 0` would silently fall through to the full buffer). A genuinely blank screen reads ok with
+    /// an empty string; a failed surface read is an error, not a silent empty.
+    func readText(_ target: String?, window: String?, pane: String?,
+                  all: Bool, lines: Int?) -> ControlResponse {
+        if all, lines != nil {
+            return ControlResponse(ok: false, error: "use either --all or --lines, not both")
+        }
+        if let lines, lines <= 0 {
+            return ControlResponse(ok: false, error: "--lines must be greater than 0")
+        }
+        return resolver.resolveSession(target, window: window) { store, id in
+            // resolveSession already resolved `id` from this store, so `session(withID:)` is non-nil.
+            guard let session = store.session(withID: id) else {
+                return ControlResponse(ok: false, error: "session not realized")
+            }
+            let chosen: (any TerminalSurface)?
+            switch pane {
+            case nil:
+                // omitted = the surface ON SCREEN (scratch-aware), the SAME `Session.onScreenSurface`
+                // resolution `session.search` uses, so a no-`--pane` read returns what's visible, not a
+                // pane hidden under the scratch.
+                chosen = session.onScreenSurface
+            case "left": chosen = session.surface
+            case "right":
+                guard let split = session.splitSurface else {
+                    return ControlResponse(ok: false, error: "session has no split pane")
+                }
+                chosen = split
+            // an unknown pane value errors here; `session.text` accepts left|right only, with no `other`
+            // toggle like `session.focus`.
+            case .some(let value): return ControlResponse(ok: false, error: "invalid pane: \(value)")
+            }
+            guard let surface = chosen as? GhosttySurfaceView else {
+                return ControlResponse(ok: false, error: "session not realized")
+            }
+            guard let text = surface.readScreenText(all: all, lines: lines) else {
+                return ControlResponse(ok: false, error: "failed to read surface buffer")
+            }
+            return ControlResponse(ok: true, result: ControlResult(text: text))
+        }
+    }
+
+    /// Drive in-terminal search on the session `id`, mirroring the GUI bar and the
+    /// `session.type`/floating-overlay arms. On the `close` path it drives the session's pinned
+    /// `searchSurface` WITHOUT selecting (so closing a background session's bar never yanks the user's
+    /// visible selection — `endSearch()` is a side-effect-free exit, like `session.copy`). For
+    /// open/needle/navigate it SELECTS the target so the bar + highlights are visible and the surface
+    /// mounts, opens search on the focused pane if not already active (`startSearch`, whose START callback
+    /// pins it as `searchSurface`; bounded realize-poll if a never-shown session), then sets the needle if
+    /// `text` is present (`sendSearchQuery`) and steps the selection if `to == next|prev` (`navigateSearch`)
+    /// — both on the PINNED owner, so a split focus move after open can't retarget them.
+    /// `to` must be one of next/prev/close (else an `invalid` error). The match count lands asynchronously
+    /// via libghostty's SEARCH_TOTAL callback; `searchTotal`/`searchSelected` are cleared before the query so
+    /// the bounded main-actor poll waits for the FRESH count (not a stale prior needle's), then `count` + the
+    /// "N of M" display string are returned in `text`.
+    func searchSession(_ id: UUID, store: AppStore, text: String?, to: String?) async -> ControlResponse {
+        // validate `to` up front so a bad mode errors before touching the surface.
+        if let to, !["next", "prev", "close"].contains(to) {
+            return ControlResponse(ok: false, error: "session.search --to must be next|prev|close")
+        }
+        guard let session = store.session(withID: id) else {
+            return ControlResponse(ok: false, error: "no such session")
+        }
+
+        // close exits search without selecting: a background session's surface is already realized while
+        // hidden, and end_search has no visible side effect, so don't disturb the user's active session.
+        // drive the PINNED `searchSurface` (the pane that opened search), not a re-resolved `activeSurface`
+        // — if split focus moved after open, `activeSurface` is the wrong pane and would strand the owner.
+        // with no open search there's no owner, so close is a clean no-op.
+        if to == "close" {
+            (session.searchSurface as? GhosttySurfaceView)?.endSearch()
+            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
+        }
+
+        // open/needle/navigate need the bar + highlights visible, so select the target (also realizes a
+        // never-shown surface). the OPEN uses the search target — a covering scratch (scratchActive, no
+        // overlay) wins, mirroring AppActions.searchTarget(), else the focused pane; the factory pins it as
+        // `searchSurface`, and once open needle/navigate target the pinned owner so they can't drift.
+        store.selectSession(id)
+        // a covering scratch is searchable and sits above the pane, so drive it, not the hidden pane beneath
+        // (`onScreenSurface` is the shared pane-vs-scratch resolution, also used by `session.text`).
+        var openSurface = session.onScreenSurface as? GhosttySurfaceView
+        if openSurface == nil {
+            // a never-shown session realizes a beat after select — bounded poll like `injectText`.
+            for _ in 0..<12 {
+                try? await Task.sleep(nanoseconds: 30_000_000)
+                if let realized = session.onScreenSurface as? GhosttySurfaceView {
+                    openSurface = realized
+                    break
+                }
+            }
+        }
+        guard let openSurface else {
+            return ControlResponse(ok: false, error: "session not realized")
+        }
+
+        // `searchActive` here means a prior open settled (set by the async START callback); two rapid
+        // scripted opens could mis-toggle, but the GUI's single-⌘F path is the common case.
+        if !session.searchActive { openSurface.startSearch() }
+        // all post-open drives go to the pinned owner; before the first START callback lands it is nil, so
+        // fall back to the just-opened focused pane (which the factory is about to pin to the same surface).
+        let surface = (session.searchSurface as? GhosttySurfaceView) ?? openSurface
+        let needleChanged = text != nil && text != session.searchNeedle
+        if let text {
+            // on a needle CHANGE, an OLDER query's SEARCH_TOTAL callback can still be queued on the main
+            // loop (callbacks hop via DispatchQueue.main.async). drain one run-loop turn FIRST so any such
+            // stale callback is delivered, THEN clear — so the settle-poll below waits for THIS needle's
+            // callback (sent AFTER the clear) rather than reading a stale count. re-sending the SAME needle
+            // must NOT drain/clear: libghostty does not re-emit SEARCH_TOTAL for an unchanged query, so
+            // clearing would leave the count nil (the retry idiom re-sends the same needle while the
+            // scrollback renders). residual race: a stale callback delivered more than one run-loop turn
+            // late (blocked behind heavy render work) could still land after the clear; a per-query epoch
+            // through libghostty would close it fully but is out of scope here.
+            if needleChanged {
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 30_000_000)
+                session.searchTotal = nil
+                session.searchSelected = nil
+            }
+            session.searchNeedle = text
+            surface.sendSearchQuery(text)
+            // an explicitly-empty needle clears the query: libghostty tears the search thread down and
+            // emits no fresh SEARCH_TOTAL (its quit event resets the count), so reset the count/selected
+            // here and skip the settle-poll below — there is nothing to wait for, and polling would just
+            // burn the full timeout reading a count that never lands.
+            if text.isEmpty {
+                session.searchTotal = nil
+                session.searchSelected = nil
+                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
+            }
+        }
+        switch to {
+        case "next": surface.navigateSearch(.next)
+        case "prev": surface.navigateSearch(.previous)
+        default: break
+        }
+        // let the SEARCH_TOTAL callback land before reporting (the overlay-result / realize poll idiom).
+        for _ in 0..<16 {
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            if session.searchTotal != nil { break }
+        }
+        // an empty display string (the bar opened with no query yet) maps to a nil `text` so the CLI
+        // prints `ok` rather than a blank line; the count is nil until a query runs.
+        let display = session.searchDisplayText
+        return ControlResponse(ok: true, result: ControlResult(text: display.isEmpty ? nil : display,
+                                                               count: session.searchTotal))
+    }
+
+    /// Inject `text` into the session `id`'s surface. A session's surface is created lazily (deferred until
+    /// it has a non-zero backing size — a never-shown session has `surface == nil`). `ghostty_surface_text`
+    /// writes to the child pty, which the kernel buffers, so text is never lost even before the first prompt.
+    /// - surface already realized → inject immediately, ok.
+    /// - never realized, `select:true` → select it, then poll for the surface (bounded: 12 × 0.03 s, the
+    ///   `focusSplitPane` idiom) and inject on the first realized attempt; never realized → error (never a
+    ///   false ok).
+    /// - never realized, no select → an immediate "use select" error.
+    func injectText(_ text: String, into id: UUID, store: AppStore, select: Bool) async -> ControlResponse {
+        if let surface = store.session(withID: id)?.surface as? GhosttySurfaceView {
+            surface.inject(text: text)
+            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
+        }
+        guard select else {
+            return ControlResponse(ok: false, error: "session not realized; use select")
+        }
+        store.selectSession(id)
+        for _ in 0..<12 {
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            if let surface = store.session(withID: id)?.surface as? GhosttySurfaceView {
+                surface.inject(text: text)
+                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
+            }
+        }
+        return ControlResponse(ok: false, error: "session not realized")
+    }
+}

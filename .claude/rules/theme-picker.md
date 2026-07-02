@@ -3,7 +3,7 @@ paths:
   - "agterm/Views/Palette.swift"
   - "agterm/SettingsModel.swift"
   - "agterm/SettingsCatalog.swift"
-  - "agterm/AppActions.swift"
+  - "agterm/AppActions*.swift"
 ---
 
 ## Theme picker
@@ -47,7 +47,7 @@ paths:
 - **Focus invariant (load-bearing).**
   `AppActions.focusActiveSession` early-returns when `palette?.mode != nil` — NEVER grab terminal first
   responder while a palette is open.
-  Without it, the launcher path breaks: closing the action palette fires `ContentView`'s close-restore
+  Without it, the launcher path breaks: closing the action palette fires `WindowContentView`'s close-restore
   (`onChange(palette.mode == nil) { focusActiveSession() }`), whose ~12×0.03s `makeFirstResponder(terminal)`
   RETRY loop out-races the just-opened picker's field focus, so the picker can't be typed into (the terminal
   behind it eats the keys).

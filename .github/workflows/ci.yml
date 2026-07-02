@@ -29,6 +29,7 @@ jobs:
               - "project.yml"
               - "scripts/**"
               - ".swiftlint.yml"
+              - "agtermUITests/.swiftlint.yml"
               - ".github/workflows/ci.yml"
 
   test:

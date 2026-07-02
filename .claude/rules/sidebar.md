@@ -1,6 +1,8 @@
 ---
 paths:
-  - "agterm/Views/WorkspaceSidebar.swift"
+  - "agterm/Views/WorkspaceSidebar*.swift"
+  - "agterm/Views/SidebarRowViews.swift"
+  - "agterm/Views/SidebarRenameController.swift"
   - "agtermCore/Sources/agtermCore/SidebarDrop.swift"
   - "agtermCore/Sources/agtermCore/SidebarMode.swift"
   - "agtermCore/Sources/agtermCore/Reorder.swift"
@@ -50,7 +52,7 @@ paths:
   table-tested in `SidebarDropTests`; the two Coordinator helpers only do the AppKit/store glue (read
   the pasteboard, resolve ids → indices via `AppStore.sessionLocation(ofSession:)`) and feed `SidebarDrop`,
   so the trickiest part is unit-covered without the fragile XCUITest drag.
-- Add affordances live in a bottom bar in `ContentView`: a workspace button and a session menu (New Session
+- Add affordances live in a bottom bar in `WindowContentView`: a workspace button and a session menu (New Session
   / Open Directory…).
   The two session actions are also on each workspace row's right-click menu.
 - Accessibility identifiers `session-row`, `workspace-row`, `edit-field`,
@@ -79,7 +81,7 @@ paths:
   Mutators: `AppStore.setFlag(_:forSession:)` (clean no-op + no save on unknown id or unchanged value),
   `clearFlags()` (single save), `setSidebarMode(_:)` (save).
   GUI half: the bottom-bar `flagged-view-toggle` button (right of the trailing `Spacer()`,
-  2-state flag/checkmark glyph, tinted `chromeText`, flips `sidebarMode` and animates via `ContentView`'s
+  2-state flag/checkmark glyph, tinted `chromeText`, flips `sidebarMode` and animates via `WindowContentView`'s
   `.animation(value:)`), the row context-menu Flag/Unflag → `AppActions.toggleFlag(_:)`,
   the View-menu Show Flagged/Show All + Flag Session + Clear Flagged, the ⌃⇧P palette entries,
   and the two `BuiltinAction`s `toggleFlaggedView`/`toggleFlag` (expressible/keyless).

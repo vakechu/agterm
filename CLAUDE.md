@@ -79,21 +79,22 @@ surface ownership, and the C-boundary concurrency contract before changing the b
   for terminal/process bytes), exempts the deliberately-named `agtermApp`/`Go` types,
   tunes `line_length` (200) and `cyclomatic_complexity` (`ignores_case_statements`,
   so the flat 44-arm command dispatch isn't "complex"), allows 2-deep type nesting,
-  and grandfathers the size limits on the big-by-design files (the control dispatch,
-  the eager-deck views, the large test suites) just above today's maxima — so only NEW growth warns.
+  and caps source files at 1000 lines / 800-line type bodies.
+  Test files get a 2000-line budget via two nested `.swiftlint.yml` configs
+  (`agtermUITests/` and `agtermCore/Tests/`) that override only `file_length`/`type_body_length` and inherit everything else from the root.
   `--strict` promotes warnings to failures, so the tree must stay swiftlint-clean (zero findings).
 
 The app must build, `swift test` must stay green, and `make lint` must pass after every change.
 
-- **Manage file sizes for real — target under 1000 lines for source files (tests may run 2–3×).**
+- **Manage file sizes for real — source files stay under 1000 lines, tests under a hard 2000 (= 2×).**
   In OUR OWN work: when you touch a long file, PROPOSE splitting/relocating it toward that rather than
   growing it further — but ALWAYS ask the user first, never restructure a file unprompted; and don't
-  reflexively bump the grandfathered swiftlint `file_length`/`type_body_length` limits to fit new code.
+  reflexively bump the swiftlint `file_length`/`type_body_length` limits to fit new code.
   For a CONTRIBUTOR's PR: do NOT force this — a contributor shouldn't have to refactor a pre-existing long
   file to land their change; NOTIFY that a file is getting long and SUGGEST keeping it under 1000, but
   never make them address the line count or block the PR on it.
   And when REVIEWING a contributor's PR, never suggest the contributor RAISE a `file_length`/`type_body_length`
-  (or any lint) limit to fit their change — bumping a grandfathered limit is a maintainer decision,
+  (or any lint) limit to fit their change — bumping a size limit is a maintainer decision,
   so at most note the file is getting long, never offer the limit bump as the fix.
 
 - **Working in a git WORKTREE: SYMLINK the prebuilt artifacts, don't re-run setup.** A fresh `git worktree`

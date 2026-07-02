@@ -1,11 +1,11 @@
 import Foundation
 import XCTest
 
-// session.text UI e2e. Split out of ControlAPIUITests so that file stays under the swiftlint
-// file_length limit; these are an extension over the SAME test class, reusing its helpers
-// (sendCommand / typeRequest / app / pollActiveSessionSplit / activeSessionID), so no
-// scaffolding is duplicated.
-extension ControlAPIUITests {
+// session.text UI e2e. A `ControlAPITestCase` subclass (was an extension over `ControlAPIUITests`), so
+// it reuses the shared harness helpers (sendCommand / typeRequest / app / pollActiveSessionSplit /
+// activeSessionID) without duplicating scaffolding.
+@MainActor
+final class SessionTextUITests: ControlAPITestCase {
     // session.text returns the session's terminal buffer in result.text. Type a command whose OUTPUT (not
     // the echoed command line) is a unique marker — `echo <tag>-$((6*7))` prints `<tag>-42`, a string the
     // typed line itself does NOT contain (it has `$((6*7))`) — so a match proves command output was

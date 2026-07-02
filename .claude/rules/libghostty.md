@@ -1,10 +1,12 @@
 ---
 paths:
-  - "agterm/Ghostty/GhosttySurfaceView.swift"
+  - "agterm/Ghostty/GhosttySurfaceView*.swift"
   - "agterm/Ghostty/GhosttyApp.swift"
   - "agterm/Ghostty/GhosttyCallbacks.swift"
   - "agterm/Ghostty/GhosttyResources.swift"
   - "agterm/ContentView.swift"
+  - "agterm/Views/WindowContentView.swift"
+  - "agterm/Views/SplitRatioAccessor.swift"
   - "agterm/Views/TerminalView.swift"
   - "agterm/Views/TerminalSearchBar.swift"
 ---
@@ -55,7 +57,7 @@ paths:
   If this layout breaks, `TERM=xterm-ghostty` fails and keys break.
 - **Surface lifecycle (EAGER deck).**
   `Session` owns its `GhosttySurfaceView` (`@ObservationIgnored`).
-  The detail pane is a *deck* — `ContentView.detailPane` is a `ZStack` over EVERY session (`store.workspaces.flatMap(\.sessions)`),
+  The detail pane is a *deck* — `WindowContentView.detailPane` is a `ZStack` over EVERY session (`store.workspaces.flatMap(\.sessions)`),
   each session's `TerminalView` mounted at once, with only the selected one at `opacity 1` + hit-testable.
   So every session's shell spawns at startup (eager realization, not lazy-on-first-select),
   and switching is a visibility + `isActive` flip, never an `.id` swap — re-hosting a surface invalidates

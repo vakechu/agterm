@@ -1,7 +1,7 @@
 ---
 paths:
-  - "agterm/AppActions.swift"
-  - "agterm/agtermApp.swift"
+  - "agterm/AppActions*.swift"
+  - "agterm/agtermApp*.swift"
   - "agterm/Views/Palette.swift"
   - "agterm/Views/PaneShortcuts.swift"
   - "agterm/Views/SessionSwitcher.swift"
@@ -17,7 +17,7 @@ paths:
 ## Menu bar and actions
 
 - User actions live in `AppActions` (app target, `@MainActor`), shared by the toolbar/bottom-bar buttons
-  (`ContentView`), the menu bar (`agtermApp`'s `.commands`), and the control channel (`ControlServer`)
+  (`WindowContentView`), the menu bar (`agtermApp`'s `.commands`), and the control channel (`ControlServer`)
   so the three never drift.
   Trivial one-liners (quick-terminal toggle) call the controller/store directly;
   `AppActions` owns the ones with real logic — new-session placement, the directory picker,
@@ -127,7 +127,7 @@ paths:
   Each pane persists its OWN cwd: `SessionSnapshot.splitCwd` + `Session.initialSplitCwd` seed the split
   shell on restore.
   The split's DIVIDER RATIO persists per-session too: `SessionSnapshot.splitRatio` (a 0...1 left-pane
-  fraction) is captured by `SplitRatioAccessor` (`ContentView.swift`) — a `.background` `NSViewRepresentable`
+  fraction) is captured by `SplitRatioAccessor` (`agterm/Views/SplitRatioAccessor.swift`) — a `.background` `NSViewRepresentable`
   on the PRIMARY pane (a background, not a third arranged pane; unconditional so it never perturbs the
   split shape) that introspects the AppKit `NSSplitView` under the SwiftUI `HSplitView`,
   since no SwiftUI API exposes the divider position.

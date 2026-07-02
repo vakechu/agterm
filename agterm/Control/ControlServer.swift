@@ -1,4 +1,3 @@
-import AppKit
 import agtermCore
 import Darwin
 import Foundation
@@ -18,16 +17,14 @@ final class ControlServer {
     /// `args.window` it targets that window (which must be open). An id/prefix session/workspace
     /// target with no `args.window` is resolved across ALL open windows so a captured id resolves
     /// regardless of which window is frontmost. The `window.*` commands drive the library itself.
-    private let library: WindowLibrary
-    private let actions: AppActions
-    private let settingsModel: SettingsModel
+    let library: WindowLibrary
+    let actions: AppActions
+    let settingsModel: SettingsModel
     private let socketPath: String
 
-    /// The frontmost open window's store — the default target of a placement/`active` command. Falls
-    /// back to an empty throwaway only in the all-windows-closed state (the app is quitting), where no
-    /// command can meaningfully run; the library is never windowless at launch.
-    private lazy var emptyStore = AppStore()
-    private var store: AppStore { library.activeStore ?? emptyStore }
+    /// The target-resolution query layer: owns the `emptyStore`/`store` frontmost-fallback and wraps the
+    /// pure `ControlResolve` matcher with app-side store scoping and the pinned wire-error strings.
+    let resolver: ControlTargetResolver
 
     /// The listening socket fd, or -1 when not listening. `start()` is idempotent on this.
     private var listenFD: Int32 = -1
@@ -115,6 +112,7 @@ final class ControlServer {
         self.library = library
         self.actions = actions
         self.settingsModel = settingsModel
+        self.resolver = ControlTargetResolver(library: library)
         self.socketPath = socketPath ?? ControlServer.defaultSocketPath()
         // keep the read cache's `active` flag fresh across async frontmost changes (this server lives
         // for the app's lifetime, so the observer doesn't need removal).
@@ -340,11 +338,11 @@ final class ControlServer {
         defer { refreshWindowCache() }
         switch request.cmd {
         case .tree:
-            return resolvePlacementStore(request.args?.window) { store in
+            return resolver.resolvePlacementStore(request.args?.window) { store in
                 ControlResponse(ok: true, result: ControlResult(tree: buildTree(in: store)))
             }
         case .sessionSelect:
-            return resolveSession(request.target, window: request.args?.window) { store, id in
+            return resolver.resolveSession(request.target, window: request.args?.window) { store, id in
                 store.selectSession(id)
                 return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
             }
@@ -354,7 +352,7 @@ final class ControlServer {
             guard let dir = (request.args?.to).flatMap(SessionNavigation.init(wire:)) else {
                 return ControlResponse(ok: false, error: "session.go requires --to next|prev|first|last|next-attention|prev-attention")
             }
-            return resolvePlacementStore(request.args?.window) { store in
+            return resolver.resolvePlacementStore(request.args?.window) { store in
                 store.navigateSession(dir)
                 guard let id = store.selectedSessionID else {
                     return ControlResponse(ok: false, error: "no session to navigate")
@@ -364,7 +362,7 @@ final class ControlServer {
         case .workspaceSelect:
             // selecting a workspace selects its first session (workspace rows are not selectable on
             // their own); an empty workspace just clears nothing and reports the workspace id.
-            return resolveWorkspace(request.target, window: request.args?.window) { store, id in
+            return resolver.resolveWorkspace(request.target, window: request.args?.window) { store, id in
                 if let first = store.workspaces.first(where: { $0.id == id })?.sessions.first {
                     store.selectSession(first.id)
                 }
@@ -373,7 +371,7 @@ final class ControlServer {
         case .workspaceNew:
             // placement target: the window's frontmost store (or `args.window`'s). name defaults to
             // the auto-generated workspace name when none is given.
-            return resolvePlacementStore(request.args?.window) { store in
+            return resolver.resolvePlacementStore(request.args?.window) { store in
                 let name = trimmed(request.args?.name) ?? store.defaultWorkspaceName
                 let workspace = store.addWorkspace(name: name)
                 return ControlResponse(ok: true, result: ControlResult(id: workspace.id.uuidString))
@@ -382,13 +380,13 @@ final class ControlServer {
             guard let name = trimmed(request.args?.name) else {
                 return ControlResponse(ok: false, error: "workspace.rename requires a name")
             }
-            return resolveWorkspace(request.target, window: request.args?.window) { store, id in
+            return resolver.resolveWorkspace(request.target, window: request.args?.window) { store, id in
                 store.renameWorkspace(id, to: name)
                 return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
             }
         case .workspaceDelete:
             // honors keep-at-least-one; returns an error rather than the GUI confirm alert.
-            return resolveWorkspace(request.target, window: request.args?.window) { store, id in
+            return resolver.resolveWorkspace(request.target, window: request.args?.window) { store, id in
                 guard store.canRemoveWorkspace else {
                     return ControlResponse(ok: false, error: "cannot delete last workspace")
                 }
@@ -407,7 +405,7 @@ final class ControlServer {
             if args?.createWorkspace == true, args?.workspaceName == nil {
                 return ControlResponse(ok: false, error: "--create-workspace requires --workspace-name")
             }
-            return resolvePlacementStore(args?.window) { store in
+            return resolver.resolvePlacementStore(args?.window) { store in
                 // name addressing: reuse-or-create with `createWorkspace`, else require an existing match.
                 if let name = args?.workspaceName {
                     // a blank name can neither be found NOR created — report that directly rather than
@@ -425,13 +423,13 @@ final class ControlServer {
                 }
                 // id addressing (default `active`): the canonical prefix/active resolver.
                 let target = args?.workspace ?? "active"
-                return resolve(target, candidates: store.workspaces.map(\.id),
+                return resolver.resolve(target, candidates: store.workspaces.map(\.id),
                                active: store.currentWorkspaceID, noun: "workspace") { workspaceID in
                     makeSessionResponse(in: store, workspaceID: workspaceID, args: args)
                 }
             }
         case .sessionClose:
-            return resolveSession(request.target, window: request.args?.window) { store, id in
+            return resolver.resolveSession(request.target, window: request.args?.window) { store, id in
                 store.closeSession(id)
                 return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
             }
@@ -439,7 +437,7 @@ final class ControlServer {
             guard let name = request.args?.name else {
                 return ControlResponse(ok: false, error: "session.rename requires a name")
             }
-            return resolveSession(request.target, window: request.args?.window) { store, id in
+            return resolver.resolveSession(request.target, window: request.args?.window) { store, id in
                 store.renameSession(id, to: name)
                 return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
             }
@@ -457,7 +455,7 @@ final class ControlServer {
             // resolve first (cross-window when no `args.window`), then realize-and-inject; the realize
             // path is async (bounded poll), so this can't go through the synchronous `resolveSession`
             // helper. the not-found / ambiguous error strings must stay in sync with `resolve(...)`.
-            switch resolveSessionTarget(request.target, window: request.args?.window) {
+            switch resolver.resolveSessionTarget(request.target, window: request.args?.window) {
             case .failure(let response):
                 return response
             case .success(let (store, id)):
@@ -490,7 +488,7 @@ final class ControlServer {
             // resolve first (cross-window when no `args.window`), then select + realize the surface; the
             // realize path is async (bounded poll), so this can't go through the synchronous
             // `resolveSession` helper. error strings stay in sync with `resolve(...)`.
-            switch resolveSessionTarget(request.target, window: request.args?.window) {
+            switch resolver.resolveSessionTarget(request.target, window: request.args?.window) {
             case .failure(let response):
                 return response
             case .success(let (store, id)):
@@ -500,7 +498,7 @@ final class ControlServer {
             guard let command = request.args?.command, !command.isEmpty else {
                 return ControlResponse(ok: false, error: "session.overlay.open requires a command")
             }
-            return resolveSession(request.target, window: request.args?.window) { store, id in
+            return resolver.resolveSession(request.target, window: request.args?.window) { store, id in
                 guard store.openOverlay(id, command: command, cwd: request.args?.cwd,
                                         wait: request.args?.wait ?? false,
                                         sizePercent: request.args?.sizePercent) else {
@@ -516,14 +514,14 @@ final class ControlServer {
                 return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
             }
         case .sessionOverlayClose:
-            return resolveSession(request.target, window: request.args?.window) { store, id in
+            return resolver.resolveSession(request.target, window: request.args?.window) { store, id in
                 guard store.closeOverlay(id) else {
                     return ControlResponse(ok: false, error: "no overlay")
                 }
                 return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
             }
         case .sessionOverlayResult:
-            return resolveSession(request.target, window: request.args?.window) { store, id in
+            return resolver.resolveSession(request.target, window: request.args?.window) { store, id in
                 guard let session = store.session(withID: id) else {
                     return ControlResponse(ok: false, error: "no such session")
                 }
@@ -600,681 +598,6 @@ final class ControlServer {
         return ControlResponse(ok: true)
     }
 
-    // MARK: - Control actions
-
-    /// Resolve the target session and drive the split directly on its owning store (NOT the
-    /// argument-less `AppActions.toggleSplit()`, which only acts on the active session). `mode` is
-    /// `on|off|toggle`, computed against the session's current `isSplit` so `on`/`off` are
-    /// idempotent. Always via `AppStore.toggleSplit` — a keep-alive hide/show that mirrors ⌘D and
-    /// never tears the hidden pane's surface down (`closeSplit` stays the shell-exit-only path).
-    /// Focus follows via `AppActions.focusSplitPane`.
-    private func splitSession(_ target: String?, window: String?, mode: String?) -> ControlResponse {
-        let mode = mode ?? "toggle"
-        return resolveSession(target, window: window) { store, id in
-            guard let session = store.session(withID: id) else {
-                return ControlResponse(ok: false, error: "no such session: \(target ?? "active")")
-            }
-            let want: Bool
-            switch mode {
-            case "on": want = true
-            case "off": want = false
-            case "toggle": want = !session.isSplit
-            default: return ControlResponse(ok: false, error: "invalid split mode: \(mode)")
-            }
-            if want != session.isSplit {
-                store.toggleSplit(id) // mirror ⌘D: keep-alive hide/show, never destroys the hidden pane
-            }
-            actions.focusSplitPane(session, wantSplit: session.splitFocused)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Resolve the target session and show/hide its scratch terminal — a third, full-overlay shell.
-    /// `mode` is `on|off|toggle`, computed against the session's current `scratchActive` so `on`/`off`
-    /// are idempotent. Like the split, hiding keeps the shell alive (`toggleScratch`); `closeScratch`
-    /// (tear down) is reserved for the shell's own `exit`. `command` (only meaningful when showing) runs
-    /// that program as the scratch's process instead of a login shell, run-once like `session.new
-    /// --command`: a scratch is expendable, so if one is already alive it is torn down and respawned
-    /// with the command (otherwise the flag would be silently inert).
-    private func scratchSession(_ target: String?, window: String?, mode: String?, command: String?) -> ControlResponse {
-        let mode = mode ?? "toggle"
-        return resolveSession(target, window: window) { store, id in
-            guard let session = store.session(withID: id) else {
-                return ControlResponse(ok: false, error: "no such session: \(target ?? "active")")
-            }
-            let want: Bool
-            switch mode {
-            case "on": want = true
-            case "off": want = false
-            case "toggle": want = !session.scratchActive
-            default: return ControlResponse(ok: false, error: "invalid scratch mode: \(mode)")
-            }
-            if want, let command, !command.isEmpty {
-                // run the command as the scratch process: respawn if one is already alive (a scratch is
-                // expendable), so the command is never silently ignored. closeScratch clears scratchActive,
-                // so the toggle below re-shows it and the factory consumes scratchCommand.
-                if session.scratchSurface != nil { store.closeScratch(id) }
-                session.scratchCommand = command
-            }
-            if want, store.selectedSessionID != id {
-                // the scratch is a full-coverage surface that grabs focus on show; it only makes sense on
-                // the visible session, so select the target first (mirrors the floating-overlay arm).
-                // Otherwise a non-active target's scratch surface would steal first responder while hidden.
-                store.selectSession(id)
-            }
-            if want != session.scratchActive {
-                store.toggleScratch(id) // keep-alive hide/show, mirrors ⌘J; never tears the shell down
-            }
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Move keyboard focus to a split session's left/right pane. `pane` is `left`|`right`|`other`
-    /// (`other` toggles). Errors when the session isn't split or the pane value is unknown.
-    private func focusSessionPane(_ target: String?, window: String?, pane: String?) -> ControlResponse {
-        let pane = pane ?? "other"
-        return resolveSession(target, window: window) { store, id in
-            guard let session = store.session(withID: id) else {
-                return ControlResponse(ok: false, error: "no such session: \(target ?? "active")")
-            }
-            guard session.hasSplit else {
-                return ControlResponse(ok: false, error: "session has no split")
-            }
-            let toSplit: Bool
-            switch pane {
-            case "left", "primary": toSplit = false
-            case "right", "split": toSplit = true
-            case "other", "toggle": toSplit = !session.splitFocused
-            default: return ControlResponse(ok: false, error: "invalid pane: \(pane)")
-            }
-            actions.setSplitFocus(toSplit, of: session)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Resize a split session's divider (control-native: no GUI/menu equivalent — the GUI resizes by
-    /// dragging the divider). `ratio` is an absolute left-pane fraction; `delta` is a signed relative nudge
-    /// (positive grows the left pane) applied to the session's current fraction (0.5 when never moved).
-    /// Exactly one must be set. The clamped fraction is stored + persisted via `AppStore.applySplitRatio`,
-    /// then `.agtermApplySplitRatio` pokes the session's `SplitProbeView` to move the live divider (a no-op
-    /// when the split is hidden — the stored value applies on next show). Errors when the session has no
-    /// split, mirroring `session.focus`. Echoes the applied (clamped) fraction in `result.ratio`.
-    private func resizeSplit(_ target: String?, window: String?, ratio: Double?, delta: Double?) -> ControlResponse {
-        switch (ratio, delta) {
-        case (nil, nil):
-            return ControlResponse(ok: false, error: "session.resize requires --split-ratio, --grow-left, or --grow-right")
-        case (.some, .some):
-            return ControlResponse(ok: false, error: "session.resize: --split-ratio is mutually exclusive with --grow-left/--grow-right")
-        default:
-            break
-        }
-        return resolveSession(target, window: window) { store, id in
-            guard let session = store.session(withID: id) else {
-                return ControlResponse(ok: false, error: "no such session: \(target ?? "active")")
-            }
-            guard session.hasSplit else {
-                return ControlResponse(ok: false, error: "session has no split")
-            }
-            let requested = ratio ?? ((session.splitRatio ?? AppStore.splitRatioDefault) + (delta ?? 0))
-            guard let applied = store.applySplitRatio(requested, forSession: id) else {
-                return ControlResponse(ok: false, error: "no such session: \(target ?? "active")")
-            }
-            NotificationCenter.default.post(name: .agtermApplySplitRatio, object: session)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString, ratio: applied))
-        }
-    }
-
-    /// Set the target session's agent-status indicator (control-native: no GUI/menu equivalent, like
-    /// `notify`/`session.type`/`session.copy`). `status` is `idle|active|completed|blocked`; an unknown
-    /// value is the structured `invalid status` error. `blink` (default false) pulses the glyph;
-    /// `autoReset` (default false) clears the indicator to idle once the session is visited. `sound`, when
-    /// non-empty, plays a one-shot sound once the status is applied (`default`/`beep` = system alert, any
-    /// other value = named system sound); it is validated up-front so an unknown name is an `unknown sound`
-    /// error that leaves the status unchanged (an empty value is treated as no per-call sound). When no
-    /// per-call `sound` is given and the session TRANSITIONS into `blocked`, the user's configured Settings
-    /// "Blocked sound" (`blockedStatusSoundName`) plays as a best-effort default. The indicator is ephemeral
-    /// and rendered on every non-idle session.
-    /// The per-call status payload for `setSessionStatus`; the addressing target/window stay separate.
-    private struct StatusUpdate {
-        let status: String?
-        let blink: Bool?
-        let autoReset: Bool?
-        let sound: String?
-    }
-
-    private func setSessionStatus(_ target: String?, window: String?, update: StatusUpdate) -> ControlResponse {
-        let status = update.status, blink = update.blink, autoReset = update.autoReset, sound = update.sound
-        guard let parsed = AgentStatus(rawValue: status ?? "") else {
-            return ControlResponse(ok: false, error: "invalid status")
-        }
-        // an explicit per-call sound is validated up-front: an unknown name errors without changing status.
-        // an empty value is treated as no per-call sound, matching `AgentStatus.effectiveSound`.
-        if let sound, !sound.isEmpty, StatusSoundPlayer.shared.action(for: sound) == nil {
-            let hint = StatusSoundPlayer.standardNames.joined(separator: ", ")
-            return ControlResponse(ok: false, error: "unknown sound: \(sound) (use 'default', 'beep', or one of: \(hint))")
-        }
-        return resolveSession(target, window: window) { store, id in
-            // capture the status BEFORE mutating so the Settings default plays only on a real transition.
-            let wasBlocked = store.session(withID: id)?.agentIndicator.status == .blocked
-            store.setAgentIndicator(AgentIndicator(status: parsed, blink: blink ?? false,
-                                                   autoReset: autoReset ?? false), forSession: id)
-            // explicit per-call sound wins on any status; the Settings default plays only when a session
-            // newly enters `blocked`, not on a repeated `blocked` set.
-            let blockedDefault = wasBlocked ? nil : self.settingsModel.settings.blockedStatusSoundName
-            if let name = parsed.effectiveSound(perCall: sound, blockedDefault: blockedDefault) {
-                StatusSoundPlayer.shared.play(name)
-            }
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Flag/unflag the target session for the flagged working-set view (the durable `Session.flagged`
-    /// membership the flat sidebar mode projects). `mode` is `on|off|toggle|clear`, computed against the
-    /// session's current `flagged` so `on`/`off` are idempotent. `clear` ignores the target and unflags
-    /// every session in the resolved store (frontmost or `--window`), via `AppStore.clearFlags()` — it
-    /// reports ok with no id. An unknown mode is an error.
-    private func flagSession(_ target: String?, window: String?, mode: String?) -> ControlResponse {
-        let mode = mode ?? "toggle"
-        if mode == "clear" {
-            return resolvePlacementStore(window) { store in
-                store.clearFlags()
-                return ControlResponse(ok: true)
-            }
-        }
-        return resolveSession(target, window: window) { store, id in
-            guard let session = store.session(withID: id) else {
-                return ControlResponse(ok: false, error: "no such session: \(target ?? "active")")
-            }
-            let want: Bool
-            switch mode {
-            case "on": want = true
-            case "off": want = false
-            case "toggle": want = !session.flagged
-            default: return ControlResponse(ok: false, error: "invalid flag mode: \(mode)")
-            }
-            store.setFlag(want, forSession: id) // no-op + no save when unchanged (idempotent)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Mode-bearing `session.move`: `to` reorders the session within its own workspace
-    /// (`up`|`down`|`top`|`bottom`), `workspace` relocates it to another workspace (appending). Exactly
-    /// one of the two is required; both set or neither set is an error. An invalid `to` direction errors.
-    private func moveSession(_ target: String?, window: String?, to: String?, workspace: String?) -> ControlResponse {
-        if to != nil && workspace != nil {
-            return ControlResponse(ok: false, error: "session.move takes either --to or a workspace, not both")
-        }
-        if let to {
-            guard let dir = ReorderDirection(rawValue: to) else {
-                return ControlResponse(ok: false, error: "session.move --to must be up|down|top|bottom")
-            }
-            return resolveSession(target, window: window) { store, id in
-                store.reorderSession(id, dir)
-                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-            }
-        }
-        guard let workspace else {
-            return ControlResponse(ok: false, error: "session.move requires --to or a workspace")
-        }
-        // the session and the destination workspace must live in the same store: resolve the
-        // session first (which fixes the store), then the workspace within that same store.
-        return resolveSession(target, window: window) { store, sessionID in
-            resolve(workspace, candidates: store.workspaces.map(\.id),
-                    active: store.currentWorkspaceID, noun: "workspace") { workspaceID in
-                store.moveSession(sessionID, toWorkspace: workspaceID)
-                return ControlResponse(ok: true, result: ControlResult(id: sessionID.uuidString))
-            }
-        }
-    }
-
-    /// `workspace.move`: reorder a workspace among its siblings (`up`|`down`|`top`|`bottom`). `to` is
-    /// required; an invalid direction errors. Resolves the workspace target via `resolveWorkspace`
-    /// (honoring the global `--window` selector like other workspace commands).
-    private func moveWorkspace(_ target: String?, window: String?, to: String?) -> ControlResponse {
-        guard let to else {
-            return ControlResponse(ok: false, error: "workspace.move requires --to")
-        }
-        guard let dir = ReorderDirection(rawValue: to) else {
-            return ControlResponse(ok: false, error: "workspace.move --to must be up|down|top|bottom")
-        }
-        return resolveWorkspace(target, window: window) { store, id in
-            store.reorderWorkspace(id, dir)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Focus (or unfocus) a workspace — collapse the sidebar tree to that workspace's subtree, or restore
-    /// the full tree. `mode` is `on|off|toggle`: `on` focuses the target, `off` unfocuses it only when it
-    /// is the currently focused one (a no-op otherwise), `toggle` flips. Delta-computed via
-    /// `AppStore.setFocusedWorkspace` so a no-op mode skips the write (idempotent). An unknown mode is an
-    /// error. The control half of the workspace row's Focus/Unfocus menu + the pill ✕.
-    private func focusWorkspace(_ target: String?, window: String?, mode: String?) -> ControlResponse {
-        let mode = mode ?? "toggle"
-        return resolveWorkspace(target, window: window) { store, id in
-            let want: UUID?
-            switch mode {
-            case "on": want = id
-            case "off": want = store.focusedWorkspaceID == id ? nil : store.focusedWorkspaceID
-            case "toggle": want = store.focusedWorkspaceID == id ? nil : id
-            default: return ControlResponse(ok: false, error: "invalid focus mode: \(mode)")
-            }
-            store.setFocusedWorkspace(want) // no-op + no save when unchanged (idempotent)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Post a desktop notification attributed to a session (default: the active session of the
-    /// frontmost window, via `resolveSession`). `title` defaults to the session name; `body` is
-    /// required. Errors when no open window owns the resolved session.
-    private func sendNotification(_ target: String?, window: String?, title: String?, body: String?) -> ControlResponse {
-        guard let body, !body.isEmpty else {
-            return ControlResponse(ok: false, error: "notify requires a body")
-        }
-        return resolveSession(target, window: window) { store, id in
-            guard let session = store.session(withID: id) else {
-                return ControlResponse(ok: false, error: "no such session: \(target ?? "active")")
-            }
-            guard NotificationManager.shared.send(toSession: session, title: title ?? "", body: body) else {
-                return ControlResponse(ok: false, error: "session's window is not open")
-            }
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Show / hide / toggle the frontmost window's quick terminal (each window owns its own),
-    /// flipping only when the requested state differs from the current `isVisible`. An unknown mode
-    /// is an error, not a silent no-op; no open window is an error rather than a silent no-op.
-    private func setQuickTerminal(mode: String?) -> ControlResponse {
-        let mode = mode ?? "toggle"
-        guard let controller = QuickTerminalRegistry.shared.controller(for: library.activeWindowID) else {
-            return ControlResponse(ok: false, error: "no open window")
-        }
-        let want: Bool
-        switch mode {
-        case "show": want = true
-        case "hide": want = false
-        case "toggle": want = !controller.isVisible
-        default: return ControlResponse(ok: false, error: "invalid quick mode: \(mode)")
-        }
-        if want != controller.isVisible {
-            if want { controller.show() } else { controller.hide() }
-        }
-        return ControlResponse(ok: true)
-    }
-
-    /// Show / hide / toggle the frontmost window's sidebar (the custom split owns visibility, so there's
-    /// no system toggle). Flips only when the requested state differs; an unknown mode is an error, and no
-    /// open window is an error rather than a silent no-op.
-    private func setSidebar(mode: String?) -> ControlResponse {
-        let mode = mode ?? "toggle"
-        guard let store = library.activeStore else {
-            return ControlResponse(ok: false, error: "no open window")
-        }
-        let want: Bool
-        switch mode {
-        case "show": want = true
-        case "hide": want = false
-        case "toggle": want = !store.sidebarVisible
-        default: return ControlResponse(ok: false, error: "invalid sidebar mode: \(mode)")
-        }
-        if want != store.sidebarVisible {
-            store.sidebarVisible = want
-            store.save() // sidebarVisible is persisted per-window
-        }
-        return ControlResponse(ok: true)
-    }
-
-    /// Set the frontmost window's sidebar VIEW mode (the tree vs the flat flagged list) — distinct from
-    /// `setSidebar` (visibility). `mode` is `tree|flagged|toggle`, delta-computed so a no-op mode skips
-    /// the write (idempotent), via `AppStore.setSidebarMode`. An unknown mode + no-open-window are errors.
-    private func setSidebarViewMode(mode: String?) -> ControlResponse {
-        let mode = mode ?? "toggle"
-        guard let store = library.activeStore else {
-            return ControlResponse(ok: false, error: "no open window")
-        }
-        let want: SidebarMode
-        switch mode {
-        case "tree": want = .tree
-        case "flagged": want = .flagged
-        case "toggle": want = store.sidebarMode == .tree ? .flagged : .tree
-        default: return ControlResponse(ok: false, error: "invalid sidebar mode: \(mode)")
-        }
-        store.setSidebarMode(want) // no-op + no save when unchanged (idempotent)
-        return ControlResponse(ok: true)
-    }
-
-    /// Expand every workspace in a window's sidebar tree — the `--window` selector picks the (OPEN) target,
-    /// defaulting to the frontmost window (a graceful no-op in flagged mode, which has no workspace rows).
-    /// Drives `AppActions.expandAllWorkspaces(in:)` (the same path the View menu / palette drive on the
-    /// frontmost). Idempotent (expanding when all are already expanded is a clean no-op); a named-but-closed
-    /// window errors, and no open window at all errors rather than silently no-opping.
-    private func expandWorkspaces(window: String?) -> ControlResponse {
-        if trimmed(window) == nil, library.activeStore == nil {
-            return ControlResponse(ok: false, error: "no open window")
-        }
-        return resolvePlacementStore(window) { store in
-            actions.expandAllWorkspaces(in: store)
-            return ControlResponse(ok: true)
-        }
-    }
-
-    /// Collapse every workspace except the active one (the active session's workspace) in a window's
-    /// sidebar, keeping that workspace expanded and scrolled into view. The `--window` selector picks the
-    /// (OPEN) target, defaulting to the frontmost. Drives `AppActions.collapseOtherWorkspaces(in:)`.
-    /// Graceful no-op in flagged mode; idempotent; a named-but-closed window errors, and no open window
-    /// at all errors.
-    private func collapseWorkspaces(window: String?) -> ControlResponse {
-        if trimmed(window) == nil, library.activeStore == nil {
-            return ControlResponse(ok: false, error: "no open window")
-        }
-        return resolvePlacementStore(window) { store in
-            actions.collapseOtherWorkspaces(in: store)
-            return ControlResponse(ok: true)
-        }
-    }
-
-    /// Resolve the target session and run a font binding action on its surface (targets a specific
-    /// surface, unlike the menu path which only hits the focused one). A never-shown session has no
-    /// surface yet → error.
-    private func font(_ target: String?, window: String?, action: String) -> ControlResponse {
-        return resolveSession(target, window: window) { store, id in
-            guard let surface = store.session(withID: id)?.surface as? GhosttySurfaceView else {
-                return ControlResponse(ok: false, error: "session not realized")
-            }
-            surface.performBindingAction(action)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Resolve the target session and return its surface's current selection text in the response (it does
-    /// NOT write the system clipboard — automation pipes the returned text into another `session.type`). A
-    /// never-shown session has no surface yet → error; an empty or absent selection → "no selection".
-    private func copySelection(_ target: String?, window: String?) -> ControlResponse {
-        return resolveSession(target, window: window) { store, id in
-            guard let surface = store.session(withID: id)?.surface as? GhosttySurfaceView else {
-                return ControlResponse(ok: false, error: "session not realized")
-            }
-            guard let text = surface.readSelection() else {
-                return ControlResponse(ok: false, error: "no selection")
-            }
-            return ControlResponse(ok: true, result: ControlResult(text: text))
-        }
-    }
-
-    /// Set or clear a session's background watermark (`session.background`, mode `image|text|clear`):
-    /// validate the inputs (shared `WatermarkConfig` enum checks; image format + existence), build the
-    /// `BackgroundWatermark` spec (nil for `clear`), persist it on the session (`AppStore`, so it rides
-    /// `SessionSnapshot`), then apply it to the session's realized surface(s). A never-shown session keeps
-    /// the spec and applies it itself when its surface is created. Returns the session id.
-    private func setBackground(_ target: String?, _ args: ControlArgs?) -> ControlResponse {
-        // the args bag IS the option struct — unpack the watermark fields once so the arm stays a small
-        // fixed-arity signature (swiftlint function_parameter_count) rather than a 10-parameter dispatch.
-        let window = args?.window, mode = args?.mode, path = args?.path, text = args?.text
-        let color = args?.color, opacity = args?.opacity, fit = args?.fit
-        let position = args?.position, repeats = args?.repeats
-        if let fit, !WatermarkConfig.isValidFit(fit) {
-            return ControlResponse(ok: false, error: "invalid fit: \(fit) (contain|cover|stretch|none)")
-        }
-        if let position, !WatermarkConfig.isValidPosition(position) {
-            return ControlResponse(ok: false, error: "invalid position: \(position)")
-        }
-        if let opacity, !WatermarkConfig.isValidOpacity(opacity) {
-            return ControlResponse(ok: false, error: "invalid opacity: \(opacity) (0.0-1.0)")
-        }
-        let watermark: BackgroundWatermark?
-        switch mode {
-        case "image":
-            guard let path, !path.isEmpty else {
-                return ControlResponse(ok: false, error: "session.background image requires a path")
-            }
-            guard WatermarkConfig.isValidImagePath(path) else {
-                return ControlResponse(ok: false, error: "image path must not contain control characters")
-            }
-            guard WatermarkRenderer.isSupportedImage(path) else {
-                return ControlResponse(ok: false, error: "unsupported image (PNG or JPEG only): \(path)")
-            }
-            guard FileManager.default.fileExists(atPath: path) else {
-                return ControlResponse(ok: false, error: "no such image file: \(path)")
-            }
-            watermark = BackgroundWatermark(kind: .image, imagePath: path, opacity: opacity,
-                                            fit: fit.flatMap(BackgroundWatermark.Fit.init(rawValue:)),
-                                            position: position.flatMap(BackgroundWatermark.Position.init(rawValue:)),
-                                            repeats: repeats)
-        case "text":
-            guard let text, !text.isEmpty else {
-                return ControlResponse(ok: false, error: "session.background text requires text")
-            }
-            guard text.count <= WatermarkConfig.maxTextLength else {
-                return ControlResponse(ok: false,
-                                       error: "session.background text too long (max \(WatermarkConfig.maxTextLength) characters)")
-            }
-            if let color, !WatermarkConfig.isValidColorHex(color) {
-                return ControlResponse(ok: false, error: "invalid color: \(color) (#rrggbb)")
-            }
-            watermark = BackgroundWatermark(kind: .text, text: text, colorHex: color,
-                                            opacity: opacity,
-                                            fit: fit.flatMap(BackgroundWatermark.Fit.init(rawValue:)),
-                                            position: position.flatMap(BackgroundWatermark.Position.init(rawValue:)))
-        case "color":
-            // no per-call opacity: a solid color honors the window translucency set in Settings, applied at
-            // emit time via `WatermarkConfig.overlayText(windowOpacity:)` (see `GhosttySurfaceView`).
-            guard let color, !color.isEmpty else {
-                return ControlResponse(ok: false, error: "session.background color requires a color")
-            }
-            guard WatermarkConfig.isValidColorHex(color) else {
-                return ControlResponse(ok: false, error: "invalid color: \(color) (#rrggbb)")
-            }
-            watermark = BackgroundWatermark(kind: .color, colorHex: color)
-        case "clear", .none:
-            watermark = nil
-        default:
-            return ControlResponse(ok: false, error: "invalid background mode: \(mode ?? "") (image|text|color|clear)")
-        }
-        return resolveSession(target, window: window) { store, id in
-            guard let session = store.session(withID: id) else {
-                return ControlResponse(ok: false, error: "no such session")
-            }
-            // gate on a real change: applyWatermark RETAINS a per-surface config freed only on teardown, so
-            // re-applying an unchanged spec (a scripted set-loop) would leak owned configs. The store no-ops
-            // its own write the same way.
-            guard store.setBackgroundWatermark(watermark, forSession: id) else {
-                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-            }
-            // clearing a `.text` watermark drops its rendered PNG so the state dir doesn't accumulate.
-            if watermark == nil { WatermarkStorage.removeRenderedText(sessionID: id) }
-            applyWatermark(to: session)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Apply a session's current watermark spec to its realized main + split surfaces. A never-realized
-    /// surface (nil) is skipped — it applies the spec itself on creation (`GhosttySurfaceView.createSurface`).
-    private func applyWatermark(to session: Session) {
-        for surface in [session.surface, session.splitSurface] {
-            (surface as? GhosttySurfaceView)?.applyWatermarkFromSession()
-        }
-    }
-
-    /// Returns a pane's terminal buffer as plain text: the visible screen by default, the full screen plus
-    /// scrollback with `all`, or the last `lines` lines (reads the screen, then trims). `pane` picks the
-    /// surface (`left` main, `right` split, or the on-screen pane when omitted); `right` errors when the
-    /// session has no split. `all` and `lines` are mutually exclusive and `lines` must be > 0 — validated
-    /// here too, not only in the CLI `validate()`, so a raw socket client can't bypass it (an unchecked
-    /// `lines <= 0` would silently fall through to the full buffer). A genuinely blank screen reads ok with
-    /// an empty string; a failed surface read is an error, not a silent empty.
-    private func readText(_ target: String?, window: String?, pane: String?,
-                          all: Bool, lines: Int?) -> ControlResponse {
-        if all, lines != nil {
-            return ControlResponse(ok: false, error: "use either --all or --lines, not both")
-        }
-        if let lines, lines <= 0 {
-            return ControlResponse(ok: false, error: "--lines must be greater than 0")
-        }
-        return resolveSession(target, window: window) { store, id in
-            // resolveSession already resolved `id` from this store, so `session(withID:)` is non-nil.
-            guard let session = store.session(withID: id) else {
-                return ControlResponse(ok: false, error: "session not realized")
-            }
-            let chosen: (any TerminalSurface)?
-            switch pane {
-            case nil:
-                // omitted = the surface ON SCREEN (scratch-aware), the SAME `Session.onScreenSurface`
-                // resolution `session.search` uses, so a no-`--pane` read returns what's visible, not a
-                // pane hidden under the scratch.
-                chosen = session.onScreenSurface
-            case "left": chosen = session.surface
-            case "right":
-                guard let split = session.splitSurface else {
-                    return ControlResponse(ok: false, error: "session has no split pane")
-                }
-                chosen = split
-            // an unknown pane value errors here; `session.text` accepts left|right only, with no `other`
-            // toggle like `session.focus`.
-            case .some(let value): return ControlResponse(ok: false, error: "invalid pane: \(value)")
-            }
-            guard let surface = chosen as? GhosttySurfaceView else {
-                return ControlResponse(ok: false, error: "session not realized")
-            }
-            guard let text = surface.readScreenText(all: all, lines: lines) else {
-                return ControlResponse(ok: false, error: "failed to read surface buffer")
-            }
-            return ControlResponse(ok: true, result: ControlResult(text: text))
-        }
-    }
-
-    /// Drive in-terminal search on the session `id`, mirroring the GUI bar and the
-    /// `session.type`/floating-overlay arms. On the `close` path it drives the session's pinned
-    /// `searchSurface` WITHOUT selecting (so closing a background session's bar never yanks the user's
-    /// visible selection — `endSearch()` is a side-effect-free exit, like `session.copy`). For
-    /// open/needle/navigate it SELECTS the target so the bar + highlights are visible and the surface
-    /// mounts, opens search on the focused pane if not already active (`startSearch`, whose START callback
-    /// pins it as `searchSurface`; bounded realize-poll if a never-shown session), then sets the needle if
-    /// `text` is present (`sendSearchQuery`) and steps the selection if `to == next|prev` (`navigateSearch`)
-    /// — both on the PINNED owner, so a split focus move after open can't retarget them.
-    /// `to` must be one of next/prev/close (else an `invalid` error). The match count lands asynchronously
-    /// via libghostty's SEARCH_TOTAL callback; `searchTotal`/`searchSelected` are cleared before the query so
-    /// the bounded main-actor poll waits for the FRESH count (not a stale prior needle's), then `count` + the
-    /// "N of M" display string are returned in `text`.
-    private func searchSession(_ id: UUID, store: AppStore, text: String?, to: String?) async -> ControlResponse {
-        // validate `to` up front so a bad mode errors before touching the surface.
-        if let to, !["next", "prev", "close"].contains(to) {
-            return ControlResponse(ok: false, error: "session.search --to must be next|prev|close")
-        }
-        guard let session = store.session(withID: id) else {
-            return ControlResponse(ok: false, error: "no such session")
-        }
-
-        // close exits search without selecting: a background session's surface is already realized while
-        // hidden, and end_search has no visible side effect, so don't disturb the user's active session.
-        // drive the PINNED `searchSurface` (the pane that opened search), not a re-resolved `activeSurface`
-        // — if split focus moved after open, `activeSurface` is the wrong pane and would strand the owner.
-        // with no open search there's no owner, so close is a clean no-op.
-        if to == "close" {
-            (session.searchSurface as? GhosttySurfaceView)?.endSearch()
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-
-        // open/needle/navigate need the bar + highlights visible, so select the target (also realizes a
-        // never-shown surface). the OPEN uses the search target — a covering scratch (scratchActive, no
-        // overlay) wins, mirroring AppActions.searchTarget(), else the focused pane; the factory pins it as
-        // `searchSurface`, and once open needle/navigate target the pinned owner so they can't drift.
-        store.selectSession(id)
-        // a covering scratch is searchable and sits above the pane, so drive it, not the hidden pane beneath
-        // (`onScreenSurface` is the shared pane-vs-scratch resolution, also used by `session.text`).
-        var openSurface = session.onScreenSurface as? GhosttySurfaceView
-        if openSurface == nil {
-            // a never-shown session realizes a beat after select — bounded poll like `injectText`.
-            for _ in 0..<12 {
-                try? await Task.sleep(nanoseconds: 30_000_000)
-                if let realized = session.onScreenSurface as? GhosttySurfaceView {
-                    openSurface = realized
-                    break
-                }
-            }
-        }
-        guard let openSurface else {
-            return ControlResponse(ok: false, error: "session not realized")
-        }
-
-        // `searchActive` here means a prior open settled (set by the async START callback); two rapid
-        // scripted opens could mis-toggle, but the GUI's single-⌘F path is the common case.
-        if !session.searchActive { openSurface.startSearch() }
-        // all post-open drives go to the pinned owner; before the first START callback lands it is nil, so
-        // fall back to the just-opened focused pane (which the factory is about to pin to the same surface).
-        let surface = (session.searchSurface as? GhosttySurfaceView) ?? openSurface
-        let needleChanged = text != nil && text != session.searchNeedle
-        if let text {
-            // on a needle CHANGE, an OLDER query's SEARCH_TOTAL callback can still be queued on the main
-            // loop (callbacks hop via DispatchQueue.main.async). drain one run-loop turn FIRST so any such
-            // stale callback is delivered, THEN clear — so the settle-poll below waits for THIS needle's
-            // callback (sent AFTER the clear) rather than reading a stale count. re-sending the SAME needle
-            // must NOT drain/clear: libghostty does not re-emit SEARCH_TOTAL for an unchanged query, so
-            // clearing would leave the count nil (the retry idiom re-sends the same needle while the
-            // scrollback renders). residual race: a stale callback delivered more than one run-loop turn
-            // late (blocked behind heavy render work) could still land after the clear; a per-query epoch
-            // through libghostty would close it fully but is out of scope here.
-            if needleChanged {
-                await Task.yield()
-                try? await Task.sleep(nanoseconds: 30_000_000)
-                session.searchTotal = nil
-                session.searchSelected = nil
-            }
-            session.searchNeedle = text
-            surface.sendSearchQuery(text)
-            // an explicitly-empty needle clears the query: libghostty tears the search thread down and
-            // emits no fresh SEARCH_TOTAL (its quit event resets the count), so reset the count/selected
-            // here and skip the settle-poll below — there is nothing to wait for, and polling would just
-            // burn the full timeout reading a count that never lands.
-            if text.isEmpty {
-                session.searchTotal = nil
-                session.searchSelected = nil
-                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-            }
-        }
-        switch to {
-        case "next": surface.navigateSearch(.next)
-        case "prev": surface.navigateSearch(.previous)
-        default: break
-        }
-        // let the SEARCH_TOTAL callback land before reporting (the overlay-result / realize poll idiom).
-        for _ in 0..<16 {
-            try? await Task.sleep(nanoseconds: 30_000_000)
-            if session.searchTotal != nil { break }
-        }
-        // an empty display string (the bar opened with no query yet) maps to a nil `text` so the CLI
-        // prints `ok` rather than a blank line; the count is nil until a query runs.
-        let display = session.searchDisplayText
-        return ControlResponse(ok: true, result: ControlResult(text: display.isEmpty ? nil : display,
-                                                               count: session.searchTotal))
-    }
-
-    /// Inject `text` into the session `id`'s surface. A session's surface is created lazily (deferred until
-    /// it has a non-zero backing size — a never-shown session has `surface == nil`). `ghostty_surface_text`
-    /// writes to the child pty, which the kernel buffers, so text is never lost even before the first prompt.
-    /// - surface already realized → inject immediately, ok.
-    /// - never realized, `select:true` → select it, then poll for the surface (bounded: 12 × 0.03 s, the
-    ///   `focusSplitPane` idiom) and inject on the first realized attempt; never realized → error (never a
-    ///   false ok).
-    /// - never realized, no select → an immediate "use select" error.
-    private func injectText(_ text: String, into id: UUID, store: AppStore, select: Bool) async -> ControlResponse {
-        if let surface = store.session(withID: id)?.surface as? GhosttySurfaceView {
-            surface.inject(text: text)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-        guard select else {
-            return ControlResponse(ok: false, error: "session not realized; use select")
-        }
-        store.selectSession(id)
-        for _ in 0..<12 {
-            try? await Task.sleep(nanoseconds: 30_000_000)
-            if let surface = store.session(withID: id)?.surface as? GhosttySurfaceView {
-                surface.inject(text: text)
-                return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-            }
-        }
-        return ControlResponse(ok: false, error: "session not realized")
-    }
-
     /// Project a window's workspace tree into the wire `ControlTree`, marking the active session and the
     /// active workspace (the one owning the selected session).
     private func buildTree(in store: AppStore) -> ControlTree {
@@ -1300,26 +623,6 @@ final class ControlServer {
         return ControlTree(workspaces: workspaces)
     }
 
-    // MARK: - Window resolution & cross-window targeting
-
-    /// A resolution outcome carrying either the resolved value or the structured error response to
-    /// return. (`ControlResponse` isn't an `Error`, so this stands in for `Result` with the same case
-    /// names.)
-    private enum Resolution<T> {
-        case success(T)
-        case failure(ControlResponse)
-    }
-
-    /// The open store a placement/`active` command targets: with `window` set, the resolved open
-    /// window's store (an error response when it isn't open / can't be resolved); without it, the
-    /// frontmost window's store. Runs `body` with that store on success.
-    private func resolvePlacementStore(_ window: String?, _ body: (AppStore) -> ControlResponse) -> ControlResponse {
-        switch resolveWindowStore(window) {
-        case .failure(let response): return response
-        case .success(let store): return body(store)
-        }
-    }
-
     /// Creates a session in `workspaceID` of `store` with the `session.new` args (cwd default $HOME,
     /// optional command/name), focuses it when it lands in the frontmost window (so a keymap `session new`
     /// opens focused like the GUI New Session; a background `--window` target keeps focus), and returns the
@@ -1332,235 +635,6 @@ final class ControlServer {
         }
         if store === library.activeStore { actions.focusActiveSession() }
         return ControlResponse(ok: true, result: ControlResult(id: session.id.uuidString))
-    }
-
-    /// Resolve `window` to an OPEN window's store. nil → the frontmost store. A set value resolves the
-    /// window id (active=frontmost / exact / prefix / ambiguous / not-found); the window must be open,
-    /// else the closed-window error.
-    private func resolveWindowStore(_ window: String?) -> Resolution<AppStore> {
-        guard let window = trimmed(window) else { return .success(store) }
-        let resolution = ControlResolve.resolve(window, candidates: library.windows.map(\.id), active: library.activeWindowID)
-        guard case .resolved(let id) = resolution else {
-            return .failure(resolutionError("window", target: window, resolution))
-        }
-        guard let store = library.store(for: id) else {
-            return .failure(ControlResponse(ok: false, error: "window not open — window.select it first"))
-        }
-        return .success(store)
-    }
-
-    // MARK: - Session / workspace target resolution
-
-    /// Resolve `target` (defaulting to `active`) to a session and its owning store, then run `body`.
-    /// With `window` set, the search is scoped to that open window's store; without it, `active`
-    /// resolves against the frontmost store while an id/prefix is matched across ALL open stores so a
-    /// captured id resolves regardless of which window is frontmost.
-    private func resolveSession(_ target: String?, window: String?,
-                                _ body: (AppStore, UUID) -> ControlResponse) -> ControlResponse {
-        switch resolveSessionTarget(target, window: window) {
-        case .failure(let response): return response
-        case .success(let (store, id)): return body(store, id)
-        }
-    }
-
-    /// Resolve `target` (defaulting to `active`) to a workspace and its owning store, then run `body`.
-    /// Same windowed/cross-window rules as `resolveSession`.
-    private func resolveWorkspace(_ target: String?, window: String?,
-                                  _ body: (AppStore, UUID) -> ControlResponse) -> ControlResponse {
-        switch resolveWindowStore(window) {
-        case .failure(let response):
-            return response
-        case .success(let scoped):
-            // a window was named, or `active`/placement defaults to the frontmost store.
-            if trimmed(window) != nil || (target ?? "active") == "active" {
-                return resolve(target ?? "active", candidates: scoped.workspaces.map(\.id),
-                               active: scoped.currentWorkspaceID, noun: "workspace") { id in
-                    body(scoped, id)
-                }
-            }
-            // no window arg + an id/prefix: match across all open stores, mapping back to the owner.
-            return resolveAcrossWindows(target ?? "active", noun: "workspace",
-                                        candidates: { $0.workspaces.map(\.id) }, body)
-        }
-    }
-
-    /// The session target as a `(store, id)` result, used by both `resolveSession` and the async
-    /// `session.type` path. See `resolveSession` for the windowed/cross-window rules.
-    private func resolveSessionTarget(_ target: String?, window: String?) -> Resolution<(AppStore, UUID)> {
-        switch resolveWindowStore(window) {
-        case .failure(let response):
-            return .failure(response)
-        case .success(let scoped):
-            if trimmed(window) != nil || (target ?? "active") == "active" {
-                let target = target ?? "active"
-                let resolution = ControlResolve.resolve(target, candidates: scoped.workspaces.flatMap { $0.sessions.map(\.id) },
-                                                         active: scoped.selectedSessionID)
-                guard case .resolved(let id) = resolution else {
-                    return .failure(resolutionError("session", target: target, resolution))
-                }
-                return .success((scoped, id))
-            }
-            return resolveTargetAcrossWindows(target ?? "active", noun: "session",
-                                              candidates: { $0.workspaces.flatMap { $0.sessions.map(\.id) } })
-        }
-    }
-
-    /// Match an id/prefix `target` against the gathered candidates of EVERY open window's store,
-    /// returning the resolved id and its owning store, or a structured error.
-    private func resolveTargetAcrossWindows(_ target: String, noun: String,
-                                            candidates: (AppStore) -> [UUID]) -> Resolution<(AppStore, UUID)> {
-        let stores = library.openIDs().compactMap { library.store(for: $0) }
-        let all = stores.flatMap(candidates)
-        let resolution = ControlResolve.resolve(target, candidates: all, active: nil)
-        guard case .resolved(let id) = resolution,
-              let owner = stores.first(where: { candidates($0).contains(id) }) else {
-            return .failure(resolutionError(noun, target: target, resolution))
-        }
-        return .success((owner, id))
-    }
-
-    /// `resolveTargetAcrossWindows` adapted to the `(store, id) -> ControlResponse` body shape.
-    private func resolveAcrossWindows(_ target: String, noun: String, candidates: (AppStore) -> [UUID],
-                                      _ body: (AppStore, UUID) -> ControlResponse) -> ControlResponse {
-        switch resolveTargetAcrossWindows(target, noun: noun, candidates: candidates) {
-        case .failure(let response): return response
-        case .success(let (store, id)): return body(store, id)
-        }
-    }
-
-    private func resolve(_ target: String, candidates: [UUID], active: UUID?, noun: String,
-                         _ body: (UUID) -> ControlResponse) -> ControlResponse {
-        let resolution = ControlResolve.resolve(target, candidates: candidates, active: active)
-        if case .resolved(let id) = resolution { return body(id) }
-        return resolutionError(noun, target: target, resolution)
-    }
-
-    /// The structured error response for a non-`.resolved` resolution (the single source of the wire
-    /// "no such <noun>: …" / "ambiguous <noun> prefix '…' → <prefix8 list>" strings, which tests pin).
-    /// `.resolved` maps to the not-found string too, covering the across-windows owner-lookup miss.
-    private func resolutionError(_ noun: String, target: String, _ resolution: TargetResolution) -> ControlResponse {
-        guard case .ambiguous(let hits) = resolution else {
-            return ControlResponse(ok: false, error: "no such \(noun): \(target)")
-        }
-        let listed = hits.map { String($0.uuidString.prefix(8)) }.joined(separator: ", ")
-        return ControlResponse(ok: false, error: "ambiguous \(noun) prefix '\(target)' → \(listed)")
-    }
-
-    // MARK: - Window commands
-
-    /// Create a new window (library) and open its on-screen window via the action hub's window opener
-    /// (the same `enqueueClaim` + `openWindow(id:)` path the menu uses). Returns the new window id.
-    private func windowNew(name: String?) -> ControlResponse {
-        let info = library.newWindow(name: trimmed(name))
-        actions.openWindow?(info.id)
-        return ControlResponse(ok: true, result: ControlResult(id: info.id.uuidString))
-    }
-
-    /// Project the window library into the `window.list` response: every window with its open flag and
-    /// whether it is the frontmost (active) window.
-    private func buildWindowList() -> [ControlWindowNode] {
-        let active = library.activeWindowID
-        return library.windows.map {
-            ControlWindowNode(id: $0.id.uuidString, name: $0.name,
-                              open: library.isOpen($0.id), active: $0.id == active)
-        }
-    }
-
-    /// Resolve a window id and surface it: raise an already-open window, or open a closed one (the
-    /// action hub's opener claims its id + spawns the window). A closed window's store loads only when
-    /// its SwiftUI window appears, so this bounded-polls for it to open before replying — a script can
-    /// then immediately target it (`tree --window <id>`) without racing the window appearing. Returns
-    /// the window id.
-    private func windowSelect(_ target: String?) async -> ControlResponse {
-        switch resolveWindowID(target) {
-        case .failure(let response): return response
-        case .success(let id):
-            actions.openWindow?(id)
-            await pollUntil { self.library.isOpen(id) }
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Resolve a window id and close its on-screen window (the registry's `performClose` runs the
-    /// standard teardown + `closeWindow` path, which fires asynchronously). Bounded-polls for the
-    /// library to mark it closed before replying, so an immediate follow-up command sees it closed. A
-    /// no-op for an already-closed window still reports ok with the id. Returns the window id.
-    private func windowClose(_ target: String?) async -> ControlResponse {
-        switch resolveWindowID(target) {
-        case .failure(let response): return response
-        case .success(let id):
-            // close the on-screen window if it's registered (drives the willClose teardown), then a
-            // semantic fallback: if it isn't registered yet (window.close racing window.new before the
-            // NSWindow attaches) or willClose hasn't flipped the flag, drop the store directly so the
-            // window is reliably marked closed regardless of the attach timing.
-            let hadWindow = WindowRegistry.shared.close(id)
-            if hadWindow {
-                await pollUntil { !self.library.isOpen(id) }
-            }
-            if library.isOpen(id) {
-                library.closeWindow(id)
-            }
-            // dropping a store is unobserved, so poke the Dock badge to drop this window's unseen total.
-            DockBadgeController.shared.refresh()
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Bounded poll for an asynchronous window lifecycle transition (open after `window.select`, closed
-    /// after `window.close`): the SwiftUI scene opens/closes the window off this dispatch, so the
-    /// library flag flips a beat later. 30 × 0.05 s (≈1.5 s) of `Task.sleep` yields the main actor
-    /// between checks — it never blocks the accept loop. Returns when `done()` holds or the budget is
-    /// spent (the caller replies ok regardless: fire-and-forget, the poll only narrows the race).
-    private func pollUntil(_ done: () -> Bool) async {
-        for _ in 0..<30 {
-            if done() { return }
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
-    }
-
-    /// Resolve a window id and resize its on-screen window to `width` x `height` points (frame size).
-    /// The window must be open; a closed window errors (resize it after `window.select`). Control-native
-    /// (no GUI surface — the native title bar already drags-to-resize).
-    private func windowResize(_ target: String?, width: Int?, height: Int?) -> ControlResponse {
-        guard let width, let height, width > 0, height > 0 else {
-            return ControlResponse(ok: false, error: "window.resize requires positive width and height")
-        }
-        return resolveWindowID(target) { id in
-            guard WindowRegistry.shared.resize(id, width: width, height: height) else {
-                return ControlResponse(ok: false, error: "window not open — window.select it first")
-            }
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Resolve a window id and move its on-screen window so its top-left corner is at (`x`, `y`) points in
-    /// the global top-left space (origin = the primary display's top-left, spanning all displays). The
-    /// window must be open; a closed window errors. Control-native (no GUI surface).
-    private func windowMove(_ target: String?, x: Int?, y: Int?, display: Int?) -> ControlResponse {
-        guard let x, let y else {
-            return ControlResponse(ok: false, error: "window.move requires x and y")
-        }
-        if let display, display < 0 || display >= NSScreen.screens.count {
-            return ControlResponse(ok: false, error: "display \(display) out of range (have \(NSScreen.screens.count))")
-        }
-        return resolveWindowID(target) { id in
-            guard WindowRegistry.shared.move(id, x: x, y: y, display: display) else {
-                return ControlResponse(ok: false, error: "window not open — window.select it first")
-            }
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Resolve a window id and zoom (maximize-to-screen toggle) its on-screen window. The window must be
-    /// open; a closed window errors. The control half of the double-click-header gesture / the green zoom
-    /// button — drives the same `NSWindow.zoom` as `WindowRegistry.zoom`.
-    private func windowZoom(_ target: String?) -> ControlResponse {
-        return resolveWindowID(target) { id in
-            guard WindowRegistry.shared.zoom(id) else {
-                return ControlResponse(ok: false, error: "window not open — window.select it first")
-            }
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
     }
 
     // MARK: - Keymap
@@ -1604,54 +678,8 @@ final class ControlServer {
         return ControlResponse(ok: true, result: ControlResult(theme: resolved))
     }
 
-    // MARK: - Window commands (cont.)
-
-    /// Resolve a window id and rename it (the name lives in the index). Requires a name. Returns the id.
-    private func windowRename(_ target: String?, name: String?) -> ControlResponse {
-        guard let name = trimmed(name) else {
-            return ControlResponse(ok: false, error: "window.rename requires a name")
-        }
-        return resolveWindowID(target) { id in
-            library.renameWindow(id, to: name)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Resolve a window id and delete it, honoring keep-at-least-one (an error instead of the GUI
-    /// confirm). Closes its on-screen window first if open. Returns the id.
-    private func windowDelete(_ target: String?) -> ControlResponse {
-        return resolveWindowID(target) { id in
-            guard library.canRemoveWindow else {
-                return ControlResponse(ok: false, error: "cannot delete last window")
-            }
-            WindowRegistry.shared.close(id)
-            library.removeWindow(id)
-            return ControlResponse(ok: true, result: ControlResult(id: id.uuidString))
-        }
-    }
-
-    /// Resolve a window `target` (defaulting to `active` = frontmost) to a window id, or the structured
-    /// error. Unlike the session/workspace resolvers, a window need not be open to be a target (select
-    /// opens it, delete removes a closed one).
-    private func resolveWindowID(_ target: String?) -> Resolution<UUID> {
-        let resolution = ControlResolve.resolve(target ?? "active", candidates: library.windows.map(\.id),
-                                                active: library.activeWindowID)
-        guard case .resolved(let id) = resolution else {
-            return .failure(resolutionError("window", target: target ?? "active", resolution))
-        }
-        return .success(id)
-    }
-
-    /// `resolveWindowID` adapted to the callback body shape (rename/delete, which act synchronously).
-    private func resolveWindowID(_ target: String?, _ body: (UUID) -> ControlResponse) -> ControlResponse {
-        switch resolveWindowID(target) {
-        case .failure(let response): return response
-        case .success(let id): return body(id)
-        }
-    }
-
     /// `value` trimmed of surrounding whitespace, or nil if absent or blank after trimming.
-    private func trimmed(_ value: String?) -> String? {
+    func trimmed(_ value: String?) -> String? {
         guard let value else { return nil }
         let result = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return result.isEmpty ? nil : result

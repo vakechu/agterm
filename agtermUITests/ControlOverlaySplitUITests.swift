@@ -1,0 +1,515 @@
+import Darwin
+import XCTest
+
+/// Control-channel e2e for the overlay lifecycle, the scratch terminal, and the split-pane commands
+/// (session.split/scratch/focus/resize) plus the ⌘W cover-peel precedence. Subclass of
+/// `ControlAPITestCase`.
+@MainActor
+final class ControlOverlaySplitUITests: ControlAPITestCase {
+    // session.overlay.open requires a command.
+    func testOverlayOpenRequiresCommand() throws {
+        let response = try sendCommand(#"{"cmd":"session.overlay.open","target":"active"}"#)
+        XCTAssertEqual(response["ok"] as? Bool, false, "open with no command should fail: \(response)")
+        XCTAssertEqual(response["error"] as? String, "session.overlay.open requires a command", "\(response)")
+    }
+
+    // session.overlay open/close lifecycle and the guards: a long-lived command (cat waits on stdin)
+    // keeps the overlay up, so a second open errors; after close, closing again errors. The overlay
+    // actually rendering and running a TUI is verified manually (the Metal surface is not in the tree).
+    func testOverlayOpenCloseLifecycle() throws {
+        let created = try sendCommand(#"{"cmd":"session.new"}"#)
+        let result = try XCTUnwrap(created["result"] as? [String: Any], "session.new should carry a result")
+        let id = try XCTUnwrap(result["id"] as? String, "session.new should return the new id")
+
+        let open = try sendCommand(#"{"cmd":"session.overlay.open","target":"\#(id)","args":{"command":"cat"}}"#)
+        XCTAssertEqual(open["ok"] as? Bool, true, "overlay open should succeed: \(open)")
+
+        let again = try sendCommand(#"{"cmd":"session.overlay.open","target":"\#(id)","args":{"command":"cat"}}"#)
+        XCTAssertEqual(again["ok"] as? Bool, false, "a second open while active should fail: \(again)")
+        XCTAssertEqual(again["error"] as? String, "overlay already open", "\(again)")
+
+        let close = try sendCommand(#"{"cmd":"session.overlay.close","target":"\#(id)"}"#)
+        XCTAssertEqual(close["ok"] as? Bool, true, "overlay close should succeed: \(close)")
+
+        let closeAgain = try sendCommand(#"{"cmd":"session.overlay.close","target":"\#(id)"}"#)
+        XCTAssertEqual(closeAgain["ok"] as? Bool, false, "closing with no overlay should fail: \(closeAgain)")
+        XCTAssertEqual(closeAgain["error"] as? String, "no overlay", "\(closeAgain)")
+    }
+
+    // the overlay auto-closes when its command exits (the SHOW_CHILD_EXITED path): open an overlay
+    // running a command that writes a marker then exits — the marker proves the command ran inside the
+    // overlay, and the tree's overlay flag clearing proves the overlay vanished with no key press.
+    func testOverlayAutoClosesWhenCommandExits() throws {
+        let created = try sendCommand(#"{"cmd":"session.new"}"#)
+        let result = try XCTUnwrap(created["result"] as? [String: Any], "session.new should carry a result")
+        let id = try XCTUnwrap(result["id"] as? String, "session.new should return the new id")
+
+        let marker = markerDir.appendingPathComponent("overlay-ran")
+        let open = try sendCommand(#"{"cmd":"session.overlay.open","target":"\#(id)","args":{"command":"sh -c 'echo ran > \#(marker.path)'"}}"#)
+        XCTAssertEqual(open["ok"] as? Bool, true, "overlay open should succeed: \(open)")
+
+        XCTAssertNotNil(pollMarker(marker, timeout: 12), "the overlay command should run inside the overlay")
+        XCTAssertTrue(pollSessionOverlay(id: id, expected: false, timeout: 10),
+                      "the overlay should auto-close when the command exits (no press-any-key prompt)")
+    }
+
+    // session.overlay.result reports the overlay program's exit status once it exits (the --block path).
+    // while the program runs, result errors "overlay still running"; after exit it returns result.exitCode.
+    func testOverlayResultReportsExitCode() throws {
+        let created = try sendCommand(#"{"cmd":"session.new"}"#)
+        let result = try XCTUnwrap(created["result"] as? [String: Any], "session.new should carry a result")
+        let id = try XCTUnwrap(result["id"] as? String, "session.new should return the new id")
+
+        let open = try sendCommand(#"{"cmd":"session.overlay.open","target":"\#(id)","args":{"command":"sh -c 'exit 7'"}}"#)
+        XCTAssertEqual(open["ok"] as? Bool, true, "overlay open should succeed: \(open)")
+
+        // poll session.overlay.result (errors while running) until the program exits and the code is reported.
+        var exitCode: Int?
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            let res = try sendCommand(#"{"cmd":"session.overlay.result","target":"\#(id)"}"#)
+            if res["ok"] as? Bool == true {
+                exitCode = (res["result"] as? [String: Any])?["exitCode"] as? Int
+                break
+            }
+            usleep(200_000)
+        }
+        XCTAssertEqual(exitCode, 7, "session.overlay.result should report the program's exit status")
+    }
+
+    // session.overlay.result errors "overlay still running" while the program is up, and "no overlay
+    // result" after a force-close where the program never recorded a status (killed before the wrapper).
+    func testOverlayResultStillRunningThenClosed() throws {
+        let created = try sendCommand(#"{"cmd":"session.new"}"#)
+        let result = try XCTUnwrap(created["result"] as? [String: Any], "session.new should carry a result")
+        let id = try XCTUnwrap(result["id"] as? String, "session.new should return the new id")
+
+        // cat with no input blocks indefinitely, so the overlay stays up.
+        let open = try sendCommand(#"{"cmd":"session.overlay.open","target":"\#(id)","args":{"command":"cat"}}"#)
+        XCTAssertEqual(open["ok"] as? Bool, true, "overlay open should succeed: \(open)")
+        XCTAssertTrue(pollSessionOverlay(id: id, expected: true, timeout: 10), "the overlay should be up")
+
+        let running = try sendCommand(#"{"cmd":"session.overlay.result","target":"\#(id)"}"#)
+        XCTAssertEqual(running["ok"] as? Bool, false, "result should error while the overlay is running")
+        XCTAssertEqual(running["error"] as? String, "overlay still running")
+
+        let closed = try sendCommand(#"{"cmd":"session.overlay.close","target":"\#(id)"}"#)
+        XCTAssertEqual(closed["ok"] as? Bool, true, "overlay close should succeed: \(closed)")
+        XCTAssertTrue(pollSessionOverlay(id: id, expected: false, timeout: 10), "the overlay should be gone")
+
+        // cat was killed before the wrapper's `echo $?`, so no status was recorded.
+        let after = try sendCommand(#"{"cmd":"session.overlay.result","target":"\#(id)"}"#)
+        XCTAssertEqual(after["ok"] as? Bool, false, "result should error when no status was recorded")
+        XCTAssertEqual(after["error"] as? String, "no overlay result")
+    }
+
+    // closing an overlay must hand keyboard focus back to the underlying session terminal. this test is
+    // DISCRIMINATING: it first proves the overlay actually grabbed keyboard focus (an overlay shell
+    // `read` captures a typed line), so the after-close assertion is meaningful — then proves the same
+    // keystrokes reach the underlying session shell once the overlay is gone. (overlay rendering/opacity
+    // is verified manually; this asserts the focus handoff, which is automatable.)
+    func testOverlayCloseReturnsFocusToSession() throws {
+        let tree = try sendCommand(#"{"cmd":"tree"}"#)
+        let treeResult = try XCTUnwrap(tree["result"] as? [String: Any], "tree should carry a result")
+        let root = try XCTUnwrap(treeResult["tree"] as? [String: Any], "result should carry a tree")
+        let workspaces = try XCTUnwrap(root["workspaces"] as? [[String: Any]], "tree should list workspaces")
+        let sessions = try XCTUnwrap(workspaces.first?["sessions"] as? [[String: Any]], "workspace should list sessions")
+        let id = try XCTUnwrap(sessions.first?["id"] as? String, "should have a seeded session id")
+
+        // the session's tty, captured by injecting into its surface directly (independent of focus).
+        let sessionTTY = markerDir.appendingPathComponent("session-tty")
+        XCTAssertEqual(try sendCommand(typeRequest(text: "tty > '\(sessionTTY.path)'\n", target: id, select: false))["ok"] as? Bool,
+                       true, "typing tty into the session should succeed")
+        let sessionTtyValue = try XCTUnwrap(pollMarker(sessionTTY, timeout: 12), "the session should report its tty")
+
+        // open an overlay whose shell captures one keyboard line, then stays alive (cat) so the overlay
+        // remains up until we close it. the captured line proves the overlay holds keyboard focus.
+        let ovlMarker = markerDir.appendingPathComponent("overlay-keys")
+        let ovlCmd = "sh -c 'IFS= read -r x; printf %s \"$x\" > \(ovlMarker.path); cat'"
+        let ovlJSON = try! JSONSerialization.data(withJSONObject:
+            ["cmd": "session.overlay.open", "target": id, "args": ["command": ovlCmd]])
+        let open = try sendCommand(String(data: ovlJSON, encoding: .utf8)!)
+        XCTAssertEqual(open["ok"] as? Bool, true, "overlay open should succeed: \(open)")
+        XCTAssertTrue(pollSessionOverlay(id: id, expected: true, timeout: 10), "the overlay should be up")
+
+        // type via the KEYBOARD while the overlay is up; the overlay shell's `read` should capture it,
+        // proving the overlay (not the session) holds first responder.
+        usleep(800_000) // let the overlay surface attach, grab focus, and the shell reach `read`
+        app.typeText("OVLFOCUS")
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertEqual(pollMarker(ovlMarker, timeout: 12), "OVLFOCUS",
+                       "the overlay must hold keyboard focus while open (else this test can't assert the handoff)")
+
+        let close = try sendCommand(#"{"cmd":"session.overlay.close","target":"\#(id)"}"#)
+        XCTAssertEqual(close["ok"] as? Bool, true, "overlay close should succeed: \(close)")
+        XCTAssertTrue(pollSessionOverlay(id: id, expected: false, timeout: 10), "the overlay should be gone")
+
+        // after the overlay tears down, type via the keyboard again: it must now reach the underlying
+        // session shell (same tty), proving focus returned. focus return is async (focusAfterReparent is a
+        // bounded makeFirstResponder retry that wins the teardown/re-host race over a few run-loop turns),
+        // so a single fixed-sleep keystroke burst can land before first responder is the session and be
+        // lost. re-type until the marker appears (same idiom as typeUntilMarker for surface-readiness):
+        // re-typing the tty line is idempotent — once focus is correct one burst writes the tty.
+        let afterTTY = markerDir.appendingPathComponent("after-close-tty")
+        let afterValue = keyboardTypeUntilMarker("tty > '\(afterTTY.path)'", file: afterTTY)
+        XCTAssertNotNil(afterValue, "after overlay close, keyboard focus should return to the session terminal")
+        XCTAssertEqual(afterValue, sessionTtyValue, "focus should return to the SAME session terminal, not be lost")
+    }
+
+    // a FULL overlay opened in a BACKGROUND (non-selected) session must NOT steal keyboard first responder.
+    // the overlay's auto-focus is gated on its deck slot being active (deckActive), so typing reaches the
+    // still-visible active session, not the hidden overlay. guards the focus-steal bug where a revdiff overlay
+    // in a non-active session silently swallowed input typed into the active session.
+    func testBackgroundSessionOverlayDoesNotStealKeyboardFocus() throws {
+        // seeded session A is the visible/active one.
+        let tree = try sendCommand(#"{"cmd":"tree"}"#)
+        let treeResult = try XCTUnwrap(tree["result"] as? [String: Any], "tree should carry a result")
+        let root = try XCTUnwrap(treeResult["tree"] as? [String: Any], "result should carry a tree")
+        let workspaces = try XCTUnwrap(root["workspaces"] as? [[String: Any]], "tree should list workspaces")
+        let sessions = try XCTUnwrap(workspaces.first?["sessions"] as? [[String: Any]], "workspace should list sessions")
+        let sessionA = try XCTUnwrap(sessions.first?["id"] as? String, "should have a seeded session id")
+
+        // create a second session B; session.new focuses the new session, so re-select A to make B a
+        // background (mounted-but-hidden) deck slot — the exact setup where the overlay opens out of view.
+        let created = try sendCommand(#"{"cmd":"session.new"}"#)
+        let sessionB = try XCTUnwrap((created["result"] as? [String: Any])?["id"] as? String,
+                                     "session.new should return the new id")
+        XCTAssertTrue(pollSessionCount(2, timeout: 10), "the second session should land")
+        XCTAssertEqual(try sendCommand(#"{"cmd":"session.select","target":"\#(sessionA)"}"#)["ok"] as? Bool, true,
+                       "re-selecting A should succeed so B is the background session")
+
+        // capture A's tty by injecting directly into its surface (focus-independent): the oracle for
+        // "the keyboard reached the active session A".
+        let ttyA = markerDir.appendingPathComponent("session-a-tty")
+        let ttyAValue = try XCTUnwrap(typeUntilMarker("tty > '\(ttyA.path)'\n", target: sessionA, file: ttyA, select: false),
+                                      "the active session A should report its tty")
+
+        // open a FULL overlay (no sizePercent) in the BACKGROUND session B; its shell captures one keyboard
+        // line into a marker then stays alive (cat). a captured marker would mean the hidden overlay stole
+        // first responder.
+        let ovlMarker = markerDir.appendingPathComponent("bg-overlay-keys")
+        let ovlCmd = "sh -c 'IFS= read -r x; printf %s \"$x\" > \(ovlMarker.path); cat'"
+        let ovlJSON = try! JSONSerialization.data(withJSONObject:
+            ["cmd": "session.overlay.open", "target": sessionB, "args": ["command": ovlCmd]])
+        XCTAssertEqual(try sendCommand(String(data: ovlJSON, encoding: .utf8)!)["ok"] as? Bool, true,
+                       "opening a full overlay in the background session should succeed")
+        XCTAssertTrue(pollSessionOverlay(id: sessionB, expected: true, timeout: 10), "B's overlay should be up")
+        // give a buggy build ample time to grab focus and reach the overlay shell's `read`.
+        usleep(800_000)
+
+        // type via the real keyboard: with the fix it reaches the visible active session A (writing A's tty);
+        // with the bug it goes to B's hidden overlay (writing ovlMarker, then swallowed by cat).
+        let afterTTY = markerDir.appendingPathComponent("after-type-tty")
+        // unwrap first so a nil (active session never received the keystrokes — the bug) reads clearly,
+        // distinct from a non-nil-but-wrong tty (keystrokes reached some other surface).
+        let afterValue = try XCTUnwrap(keyboardTypeUntilMarker("tty > '\(afterTTY.path)'", file: afterTTY),
+                                       "keyboard input must reach the active session (its tty marker should be written)")
+        XCTAssertEqual(afterValue, ttyAValue,
+                       "keyboard input must reach the visible active session, not the background overlay")
+        XCTAssertNil(pollMarker(ovlMarker, timeout: 2),
+                     "the background session's overlay must NOT capture keyboard input")
+    }
+
+    // session.split toggle shows split:true in the tree; off hides it (keep-alive, mirrors ⌘D — the
+    // pane's surface is NOT destroyed, only closeSplit on shell-exit does that), clearing split:false.
+    func testSessionSplitToggle() throws {
+        let split = try sendCommand(#"{"cmd":"session.split","target":"active","args":{"mode":"toggle"}}"#)
+        XCTAssertEqual(split["ok"] as? Bool, true, "session.split toggle should succeed: \(split)")
+        XCTAssertTrue(pollActiveSessionSplit(true, timeout: 10), "the active session should report split:true")
+
+        let unsplit = try sendCommand(#"{"cmd":"session.split","target":"active","args":{"mode":"off"}}"#)
+        XCTAssertEqual(unsplit["ok"] as? Bool, true, "session.split off should succeed: \(unsplit)")
+        XCTAssertTrue(pollActiveSessionSplit(false, timeout: 10), "off should clear the split")
+    }
+
+    // session.scratch toggle shows scratch:true in the tree; off hides it (keep-alive — the shell's
+    // surface is NOT destroyed, only the shell's own `exit` does that), clearing scratch:false. An
+    // unknown mode is rejected.
+    func testSessionScratchToggle() throws {
+        let on = try sendCommand(#"{"cmd":"session.scratch","target":"active","args":{"mode":"toggle"}}"#)
+        XCTAssertEqual(on["ok"] as? Bool, true, "session.scratch toggle should succeed: \(on)")
+        XCTAssertTrue(pollActiveSessionScratch(true, timeout: 10), "the active session should report scratch:true")
+
+        // `on` while already shown is idempotent (the delta guard skips the redundant toggle, so it does
+        // NOT flip back to hidden).
+        let onAgain = try sendCommand(#"{"cmd":"session.scratch","target":"active","args":{"mode":"on"}}"#)
+        XCTAssertEqual(onAgain["ok"] as? Bool, true, "session.scratch on (already on) should succeed: \(onAgain)")
+        XCTAssertTrue(pollActiveSessionScratch(true, timeout: 10), "on while shown stays scratch:true")
+
+        let off = try sendCommand(#"{"cmd":"session.scratch","target":"active","args":{"mode":"off"}}"#)
+        XCTAssertEqual(off["ok"] as? Bool, true, "session.scratch off should succeed: \(off)")
+        XCTAssertTrue(pollActiveSessionScratch(false, timeout: 10), "off should hide the scratch")
+
+        // `off` while already hidden is idempotent.
+        let offAgain = try sendCommand(#"{"cmd":"session.scratch","target":"active","args":{"mode":"off"}}"#)
+        XCTAssertEqual(offAgain["ok"] as? Bool, true, "session.scratch off (already off) should succeed: \(offAgain)")
+        XCTAssertTrue(pollActiveSessionScratch(false, timeout: 10), "off while hidden stays scratch:false")
+
+        let bad = try sendCommand(#"{"cmd":"session.scratch","target":"active","args":{"mode":"bogus"}}"#)
+        XCTAssertEqual(bad["ok"] as? Bool, false, "invalid scratch mode should fail: \(bad)")
+        XCTAssertTrue((bad["error"] as? String ?? "").contains("invalid scratch mode"), "should report invalid mode: \(bad)")
+    }
+
+    // ⌘W with the scratch shown DISMISSES the scratch, not the session under it. The scratch renders
+    // full-pane over the active session, so the close shortcut must target the cover, not the hidden session.
+    func testCloseSessionShortcutHidesScratchInsteadOfClosingSession() throws {
+        let on = try sendCommand(#"{"cmd":"session.scratch","target":"active","args":{"mode":"on"}}"#)
+        XCTAssertEqual(on["ok"] as? Bool, true, "session.scratch on should succeed: \(on)")
+        XCTAssertTrue(pollActiveSessionScratch(true, timeout: 10), "the scratch should be shown")
+
+        app.activate() // set up entirely over the socket, so ensure the app is frontmost before ⌘W
+        app.typeKey("w", modifierFlags: .command)
+
+        // the flag poll is the real oracle: a CLOSED session vanishes from the tree, so scratch:false can
+        // never be observed and this times out (catching the bug). row-count is a post-dismiss invariant
+        // (checked AFTER the dismiss so it can't early-return on stale pre-close state).
+        XCTAssertTrue(pollActiveSessionScratch(false, timeout: 10), "⌘W should hide the scratch")
+        XCTAssertTrue(pollSessionRowCount(1, timeout: 10), "⌘W must not close the session behind the scratch")
+    }
+
+    // ⌘W with a full overlay up DISMISSES the overlay (closes it), not the session under it. `cat` blocks
+    // so the overlay stays up until ⌘W; the session row surviving proves the session wasn't closed instead.
+    func testCloseSessionShortcutClosesOverlayInsteadOfClosingSession() throws {
+        let seededID = try activeSessionID()
+
+        let open = try sendCommand(#"{"cmd":"session.overlay.open","target":"\#(seededID)","args":{"command":"cat"}}"#)
+        XCTAssertEqual(open["ok"] as? Bool, true, "overlay open should succeed: \(open)")
+        XCTAssertTrue(pollSessionOverlay(id: seededID, expected: true, timeout: 10), "the overlay should be up")
+
+        app.activate()
+        app.typeKey("w", modifierFlags: .command)
+
+        XCTAssertTrue(pollSessionOverlay(id: seededID, expected: false, timeout: 10), "⌘W should close the overlay")
+        XCTAssertTrue(pollSessionRowCount(1, timeout: 10), "⌘W must not close the session behind the overlay")
+    }
+
+    // ⌘W closes a FLOATING overlay (sizePercent set, session visible behind it) without closing the session.
+    // The floating overlay still holds first responder, so the close shortcut targets it, not the session.
+    func testCloseSessionShortcutClosesFloatingOverlayInsteadOfClosingSession() throws {
+        let seededID = try activeSessionID()
+
+        let open = try sendCommand(#"{"cmd":"session.overlay.open","target":"\#(seededID)","args":{"command":"cat","sizePercent":70}}"#)
+        XCTAssertEqual(open["ok"] as? Bool, true, "floating overlay open should succeed: \(open)")
+        XCTAssertTrue(pollSessionOverlay(id: seededID, expected: true, timeout: 10), "the floating overlay should be up")
+
+        app.activate()
+        app.typeKey("w", modifierFlags: .command)
+
+        XCTAssertTrue(pollSessionOverlay(id: seededID, expected: false, timeout: 10), "⌘W should close the floating overlay")
+        XCTAssertTrue(pollSessionRowCount(1, timeout: 10), "⌘W must not close the session behind the floating overlay")
+    }
+
+    // ⌘W peels stacked covers in z-order: a full overlay (zIndex 2) opened over a shown scratch (zIndex 1).
+    // First ⌘W closes the overlay (scratch stays), second ⌘W hides the scratch, and the session survives both.
+    func testCloseSessionShortcutPeelsStackedCoversInPrecedenceOrder() throws {
+        let seededID = try activeSessionID()
+
+        let onScratch = try sendCommand(#"{"cmd":"session.scratch","target":"active","args":{"mode":"on"}}"#)
+        XCTAssertEqual(onScratch["ok"] as? Bool, true, "session.scratch on should succeed: \(onScratch)")
+        XCTAssertTrue(pollActiveSessionScratch(true, timeout: 10), "the scratch should be shown")
+
+        let open = try sendCommand(#"{"cmd":"session.overlay.open","target":"\#(seededID)","args":{"command":"cat"}}"#)
+        XCTAssertEqual(open["ok"] as? Bool, true, "overlay open over the scratch should succeed: \(open)")
+        XCTAssertTrue(pollSessionOverlay(id: seededID, expected: true, timeout: 10), "the overlay should be up over the scratch")
+
+        app.activate()
+        // ⌘W #1: the overlay is topmost, so it closes; the scratch stays shown.
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(pollSessionOverlay(id: seededID, expected: false, timeout: 10), "⌘W #1 should close the overlay")
+        XCTAssertTrue(pollActiveSessionScratch(true, timeout: 10), "the scratch should remain after the overlay closes")
+
+        app.activate()
+        // ⌘W #2: now the scratch is topmost, so it hides.
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(pollActiveSessionScratch(false, timeout: 10), "⌘W #2 should hide the scratch")
+        XCTAssertTrue(pollSessionRowCount(1, timeout: 10), "the session survives peeling both covers")
+    }
+
+    // session.scratch --command runs the command AS the scratch's process (not a shell): the command
+    // writes a marker file, proving it ran. It exits immediately (run-once), so the scratch then closes —
+    // the marker is the oracle. The command is argv-style (no shell), so the redirect is wrapped in sh -c.
+    func testSessionScratchCommandRunsAsProcess() throws {
+        let marker = NSTemporaryDirectory() + "agterm-scratchcmd-\(UUID().uuidString).txt"
+        let payload: [String: Any] = ["cmd": "session.scratch", "target": "active",
+                                      "args": ["mode": "on", "command": "sh -c 'printf SCRATCHRAN > \(marker)'"]]
+        let line = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8)!
+        let resp = try sendCommand(line)
+        XCTAssertEqual(resp["ok"] as? Bool, true, "session.scratch --command should succeed: \(resp)")
+
+        var ran = false
+        for _ in 0..<40 {
+            if let s = try? String(contentsOfFile: marker, encoding: .utf8), s == "SCRATCHRAN" { ran = true; break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        }
+        XCTAssertTrue(ran, "the scratch command should run as the scratch's process")
+        try? FileManager.default.removeItem(atPath: marker)
+    }
+
+    // session.scratch on a NON-active target selects it first (the scratch is full-coverage and grabs
+    // focus on show, so it must be the visible session), then shows the scratch on it.
+    func testSessionScratchOnSelectsTarget() throws {
+        // the seeded session is active; capture its id.
+        let tree = try sendCommand(#"{"cmd":"tree"}"#)
+        let result = try XCTUnwrap(tree["result"] as? [String: Any], "tree should carry a result")
+        let t = try XCTUnwrap(result["tree"] as? [String: Any], "result should carry a tree")
+        let ws = try XCTUnwrap((t["workspaces"] as? [[String: Any]])?.first, "should have a workspace")
+        let seededID = try XCTUnwrap((ws["sessions"] as? [[String: Any]])?.first?["id"] as? String, "should have a seeded session")
+
+        // create a second session — session.new focuses it, so the seeded one is no longer active.
+        let created = try sendCommand(#"{"cmd":"session.new"}"#)
+        let newID = try XCTUnwrap((created["result"] as? [String: Any])?["id"] as? String, "session.new should return an id")
+        XCTAssertNotEqual(newID.lowercased(), seededID.lowercased(), "the new session is distinct")
+
+        // show scratch on the non-active seeded session: it should become active AND report scratch:true.
+        let on = try sendCommand(#"{"cmd":"session.scratch","target":"\#(seededID)","args":{"mode":"on"}}"#)
+        XCTAssertEqual(on["ok"] as? Bool, true, "session.scratch on a non-active target should succeed: \(on)")
+        XCTAssertTrue(pollSessionActiveAndScratch(id: seededID, timeout: 10),
+                      "showing scratch should select the target and report scratch:true")
+    }
+
+    // session.focus errors on a non-split session, succeeds on each pane once split, and rejects an
+    // unknown pane.
+    func testSessionFocusPane() throws {
+        let notSplit = try sendCommand(#"{"cmd":"session.focus","target":"active","args":{"pane":"right"}}"#)
+        XCTAssertEqual(notSplit["ok"] as? Bool, false, "focus on a non-split session should fail: \(notSplit)")
+        XCTAssertTrue((notSplit["error"] as? String ?? "").contains("no split"), "should report no split: \(notSplit)")
+
+        let split = try sendCommand(#"{"cmd":"session.split","target":"active","args":{"mode":"on"}}"#)
+        XCTAssertEqual(split["ok"] as? Bool, true, "split on should succeed: \(split)")
+        XCTAssertTrue(pollActiveSessionSplit(true, timeout: 10), "the active session should report split:true")
+
+        let right = try sendCommand(#"{"cmd":"session.focus","target":"active","args":{"pane":"right"}}"#)
+        XCTAssertEqual(right["ok"] as? Bool, true, "focus right should succeed: \(right)")
+        let left = try sendCommand(#"{"cmd":"session.focus","target":"active","args":{"pane":"left"}}"#)
+        XCTAssertEqual(left["ok"] as? Bool, true, "focus left should succeed: \(left)")
+
+        let bad = try sendCommand(#"{"cmd":"session.focus","target":"active","args":{"pane":"bogus"}}"#)
+        XCTAssertEqual(bad["ok"] as? Bool, false, "invalid pane should fail: \(bad)")
+        XCTAssertTrue((bad["error"] as? String ?? "").contains("invalid pane"), "should report invalid pane: \(bad)")
+    }
+
+    // session.resize errors on a non-split session, sets an absolute fraction (clamped) and a relative
+    // nudge on a split, persists it to workspaces.json, and rejects a request carrying no fraction.
+    func testSessionResizeSplitDivider() throws {
+        let notSplit = try sendCommand(#"{"cmd":"session.resize","target":"active","args":{"ratio":0.7}}"#)
+        XCTAssertEqual(notSplit["ok"] as? Bool, false, "resize on a non-split session should fail: \(notSplit)")
+        XCTAssertTrue((notSplit["error"] as? String ?? "").contains("no split"), "should report no split: \(notSplit)")
+
+        let split = try sendCommand(#"{"cmd":"session.split","target":"active","args":{"mode":"on"}}"#)
+        XCTAssertEqual(split["ok"] as? Bool, true, "split on should succeed: \(split)")
+        XCTAssertTrue(pollActiveSessionSplit(true, timeout: 10), "the active session should report split:true")
+
+        // relative nudge from the nil base (0.5 default) before any absolute set: grow-left 0.1 -> 0.6.
+        let fromDefault = try sendCommand(#"{"cmd":"session.resize","target":"active","args":{"ratioDelta":0.1}}"#)
+        XCTAssertEqual(fromDefault["ok"] as? Bool, true, "nudge from default should succeed: \(fromDefault)")
+        XCTAssertEqual((fromDefault["result"] as? [String: Any])?["ratio"] as? Double ?? -1, 0.6, accuracy: 0.0001,
+                       "0.5 default + 0.1 = 0.6: \(fromDefault)")
+
+        // server rejects both fraction forms at once — the CLI's validate() blocks this, but a raw client can send it.
+        let both = try sendCommand(#"{"cmd":"session.resize","target":"active","args":{"ratio":0.7,"ratioDelta":0.1}}"#)
+        XCTAssertEqual(both["ok"] as? Bool, false, "both ratio and delta should fail: \(both)")
+        XCTAssertTrue((both["error"] as? String ?? "").contains("mutually exclusive"), "should report mutual exclusion: \(both)")
+
+        // absolute fraction: echoed in result.ratio and persisted to the snapshot.
+        let abs = try sendCommand(#"{"cmd":"session.resize","target":"active","args":{"ratio":0.7}}"#)
+        XCTAssertEqual(abs["ok"] as? Bool, true, "absolute resize should succeed: \(abs)")
+        XCTAssertEqual((abs["result"] as? [String: Any])?["ratio"] as? Double ?? -1, 0.7, accuracy: 0.0001,
+                       "should echo the applied ratio: \(abs)")
+        XCTAssertTrue(pollSplitRatio(0.7, timeout: 10), "0.7 should land in workspaces.json")
+
+        // out-of-range absolute clamps to the cap (0.95).
+        let clamped = try sendCommand(#"{"cmd":"session.resize","target":"active","args":{"ratio":2.0}}"#)
+        XCTAssertEqual(clamped["ok"] as? Bool, true, "clamped resize should succeed: \(clamped)")
+        XCTAssertEqual((clamped["result"] as? [String: Any])?["ratio"] as? Double ?? -1, 0.95, accuracy: 0.0001,
+                       "2.0 should clamp to 0.95: \(clamped)")
+
+        // relative nudge: grow-right 0.1 (a negative delta) from 0.95 lands at 0.85.
+        let nudged = try sendCommand(#"{"cmd":"session.resize","target":"active","args":{"ratioDelta":-0.1}}"#)
+        XCTAssertEqual(nudged["ok"] as? Bool, true, "relative resize should succeed: \(nudged)")
+        XCTAssertEqual((nudged["result"] as? [String: Any])?["ratio"] as? Double ?? -1, 0.85, accuracy: 0.0001,
+                       "0.95 - 0.1 = 0.85: \(nudged)")
+
+        // neither a ratio nor a delta is a usage error.
+        let empty = try sendCommand(#"{"cmd":"session.resize","target":"active","args":{}}"#)
+        XCTAssertEqual(empty["ok"] as? Bool, false, "resize with no fraction should fail: \(empty)")
+    }
+
+    /// Types `command` + Return via the real keyboard (XCUI `typeText`), retrying until `file` reports a
+    /// non-empty marker. The keyboard routes to whatever holds first responder, and focus return after an
+    /// overlay/pane teardown is async (a bounded makeFirstResponder retry), so the first burst can land
+    /// before the session is first responder and be dropped. Re-typing each attempt is idempotent for a
+    /// `cmd > file` command. Returns the marker contents, or nil if it never appeared across all attempts.
+    private func keyboardTypeUntilMarker(_ command: String, file: URL,
+                                         attempts: Int = 6, perAttempt: TimeInterval = 2.5) -> String? {
+        for _ in 0..<attempts {
+            try? FileManager.default.removeItem(at: file)
+            app.typeText(command)
+            app.typeKey(.return, modifierFlags: [])
+            if let value = pollMarker(file, timeout: perAttempt) { return value }
+        }
+        return nil
+    }
+
+    /// Polls `tree` (overlay state is not persisted to workspaces.json) until the session with `id` has
+    /// `overlay` equal to `expected`. Absent/nil treated as false.
+    private func pollSessionOverlay(id: String, expected: Bool, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let tree = try? sendCommand(#"{"cmd":"tree"}"#),
+               let result = tree["result"] as? [String: Any],
+               let t = result["tree"] as? [String: Any],
+               let workspaces = t["workspaces"] as? [[String: Any]] {
+                for ws in workspaces {
+                    let sessions = ws["sessions"] as? [[String: Any]] ?? []
+                    for s in sessions where (s["id"] as? String)?.lowercased() == id.lowercased() {
+                        if (s["overlay"] as? Bool ?? false) == expected { return true }
+                    }
+                }
+            }
+            usleep(200_000)
+        }
+        return false
+    }
+
+    /// Polls `tree` (scratch state is not persisted to workspaces.json) until the ACTIVE session has
+    /// `scratch` equal to `expected`. Absent/nil treated as false.
+    private func pollActiveSessionScratch(_ expected: Bool, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let tree = try? sendCommand(#"{"cmd":"tree"}"#),
+               let result = tree["result"] as? [String: Any],
+               let t = result["tree"] as? [String: Any],
+               let workspaces = t["workspaces"] as? [[String: Any]] {
+                for ws in workspaces {
+                    let sessions = ws["sessions"] as? [[String: Any]] ?? []
+                    for s in sessions where (s["active"] as? Bool ?? false) {
+                        if (s["scratch"] as? Bool ?? false) == expected { return true }
+                    }
+                }
+            }
+            usleep(200_000)
+        }
+        return false
+    }
+
+    /// Polls `tree` until the session with `id` is BOTH active and has `scratch == true` (used to verify
+    /// session.scratch on a non-active target selects it before showing).
+    private func pollSessionActiveAndScratch(id: String, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let tree = try? sendCommand(#"{"cmd":"tree"}"#),
+               let result = tree["result"] as? [String: Any],
+               let t = result["tree"] as? [String: Any],
+               let workspaces = t["workspaces"] as? [[String: Any]] {
+                for ws in workspaces {
+                    for s in (ws["sessions"] as? [[String: Any]] ?? [])
+                    where (s["id"] as? String)?.lowercased() == id.lowercased() {
+                        if (s["active"] as? Bool ?? false) && (s["scratch"] as? Bool ?? false) { return true }
+                    }
+                }
+            }
+            usleep(200_000)
+        }
+        return false
+    }
+}

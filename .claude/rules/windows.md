@@ -3,6 +3,10 @@ paths:
   - "agtermCore/Sources/agtermCore/WindowLibrary.swift"
   - "agtermCore/Sources/agtermCore/WindowGeometry.swift"
   - "agtermCore/Sources/agtermCore/QuitPrompt.swift"
+  - "agterm/WindowRegistry.swift"
+  - "agterm/AppDelegate.swift"
+  - "agterm/Views/WindowAccessor.swift"
+  - "agterm/Views/WindowControlArea.swift"
   - "agterm/Views/QuickTerminal.swift"
   - "agtermUITests/MultiWindowUITests.swift"
   - "agtermUITests/QuickTerminalUITests.swift"
@@ -107,7 +111,7 @@ never two bundles in one window.
   Keep-in-sync EXEMPT — a quit-confirm modal is GUI-only chrome with nothing to drive over the socket
   (there is no `app.quit` control command).
 - **`WindowRegistry`**
-  (`ContentView.swift`, app-side, `@MainActor` singleton) maps a `WindowInfo.ID` to its live `NSWindow`
+  (`agterm/WindowRegistry.swift`, app-side, `@MainActor` singleton) maps a `WindowInfo.ID` to its live `NSWindow`
   — `WindowLibrary` is host-free (no AppKit), so the NSWindow handles live app-side.
   `TitleProbeView` registers/unregisters on attach/close; `raise(_:)` brings an already-open window forward
   (the dedup-by-id raise path), `close(_:)` runs `performClose` (driving the standard `willClose` teardown,
@@ -151,7 +155,7 @@ never two bundles in one window.
   (NOT native fullscreen); a second call restores.
   Unlike `resize`/`move` it has a GUI surface: a custom-titlebar SwiftUI view can't receive the OS
   double-click handling, so `WindowControlArea` (an `NSViewRepresentable` behind `customTitlebar`'s decorative
-  regions in `ContentView.swift`) handles `mouseDown` — `clickCount == 2` runs the user's configured title-bar
+  regions in `agterm/Views/WindowControlArea.swift`) handles `mouseDown` — `clickCount == 2` runs the user's configured title-bar
   action, else `performDrag` (also making the FULL header draggable, not just the native top band);
   `mouseDownCanMoveWindow = false` so our handler sees the double-click.
   The double-click honors the macOS **Desktop & Dock ▸ "Double-click a window's title bar to"** setting
@@ -170,7 +174,7 @@ never two bundles in one window.
   (3) the `window zoom <id>` subcommand in `agtermctlKit`, (4) `.windowZoom` in `windowCommandsRoundTrip`
   (`ControlProtocolTests`) + the e2e `testWindowZoom` plus the gesture tests
   `testDoubleClickHeaderZoomsAndRestores` / `testDoubleClickHeaderHonorsNoneSetting` /
-  `testHeaderButtonsStillReceiveClicksOverControlArea` / `testDragHeaderMovesWindow` in `ControlAPIUITests`.
+  `testHeaderButtonsStillReceiveClicksOverControlArea` / `testDragHeaderMovesWindow` in `ControlWindowUITests`.
 - **`window.*` control additions (eight commands, plus `window.zoom`).**
   `window.new` (returns the new id + opens its window), `window.list` (returns `windows` with each window's
   `open`/`active` flag), `window.select` (raise-or-open), `window.close` (`WindowRegistry.close` → standard
