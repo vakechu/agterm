@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.0 - 2026-07-02
+
+### New Features
+
+- confirm before closing a session, opt-in via a setting #101 @umputun
+- configurable directory for new sessions #70 @umputun
+- per-overlay background color for session.overlay.open #88 @umputun
+
+### Improvements
+
+- move keymap, overlay-capture, and command-matching logic into agtermCore and hoist shared catalogs @melonamin
+- split oversized source and test files to enforce the swiftlint 1000/2000-line limits #86 @umputun
+
+### Bug Fixes
+
+- drag-drop inserts multi-line text as a paste instead of auto-executing each line #102 @umputun
+- escape newlines in dropped file paths to prevent command injection #96 @vlondon
+- keep '#' inside single-quoted custom-command shell args #98 @vlondon
+- single-quote-escape image paths in the show-image.sh overlay command #100 @vlondon
+- source builds show the real version instead of 0.0.0 in About #73 @vnazarenko
+
 ## v0.5.2 - 2026-07-01
 
 ### Improvements
