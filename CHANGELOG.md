@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.10.1 - 2026-07-08
+
+### Improvements
+
+- type into the quick terminal and read its screen back over the control API with `quick type` / `quick text` #177 @umputun
+- soften the sidebar workspace name to a medium weight so it reads a touch heavier than the sessions without the heavy bold f793fd3 @umputun
+
 ## v0.10.0 - 2026-07-08
 
 ### New Features
