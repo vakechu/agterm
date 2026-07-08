@@ -59,6 +59,20 @@ paths:
   NOT add fresh validation/response logic inline in the `ControlServer` switch.
   (This is the control-channel case of the root `CLAUDE.md` "hoist host-free logic down into `agtermCore`"
   module-boundary rule.)
+- **The four-point audit is the WRITE path; a state-mutating command also owes a READ-BACK field.**
+  Whenever a command SETS or MUTATES per-session state, surface that state on `ControlSessionNode` (or
+  the tree top-level) so a script can query the value it just wrote: record-then-restore, read-modify-write,
+  and idempotency all depend on reading back what a `set`/`resize`/`toggle` changed.
+  The read field is populated in `AppStore.controlTree` and, like the other optionals, omitted from the
+  JSON when nil.
+  Existing pairs to mirror: `session.background`/`background`, `notify`+`session.seen`/`unseen`,
+  `session.status`/`status`+`statusPane`, `session.flag`/`flagged`, `sidebar`/`sidebarVisible` (top-level),
+  `session.overlay.resize`/`overlaySizePercent`.
+  This is a SEPARATE obligation from the four-point audit (Command + arg + CLI + tests) and easy to forget:
+  `session.overlay.resize` shipped write-only and `overlaySizePercent` was added only later, when a
+  tmux-zoom script needed to restore an overlay's exact size.
+  When adding a state-mutating command, add its read-back field in the SAME change and cover it with a
+  `treeSessionNodeRoundTrips…`/`…OmitsWhenNil` round-trip test plus a `controlTree` populate test.
 - **Bundling + install.**
   The `agterm` target's `Bundle agtermctl CLI` postBuildScript (`project.yml`) runs `swift build -c release --product agtermctl`,
   copies it to `agterm.app/Contents/MacOS/agtermctl`, ad-hoc signs the helper,
@@ -544,6 +558,10 @@ paths:
   `agtermctlKit`, (4) round-trip in `ControlProtocolTests` + dispatcher routing/validation in `ControlDispatcherTests`
   + `AppStorePaneTests` (resize clamp/switch/no-overlay) + CLI mapping in `CommandsTests` + the e2e
   `testOverlayResizeSwitchesFloatingAndFull` in `ControlOverlaySplitUITests`.
+  The READ side is `ControlSessionNode.overlaySizePercent` on each `tree` node (see the `tree` read-side
+  fields below) — populated in `AppStore.controlTree`, round-tripped by `treeSessionNodeRoundTripsWithOverlaySizePercent`/`…OmitsOverlaySizePercentWhenNil`
+  and `AppStorePaneTests.controlTreeReportsOverlaySizePercent`, and mirrored in the agent-skill `reference.md`
+  tree schema — so a script can record an overlay's size before zooming to `--full` and restore it exactly.
   Mode-bearing commands (`session.split`/`quick`) compute the delta against current state so `on`/`off`/`show`/`hide`
   are idempotent, and an unknown mode is an error.
   `session.status` flags a per-session agent status on the sidebar row — `args.status` is `idle`|`active`|`completed`|`blocked`
@@ -774,6 +792,12 @@ paths:
   is each pane running".
   It ALSO surfaces `background` on each node — the `BackgroundWatermark` spec set via `session.background`
   (omitted when none), the read side of set/clear so a script can query the current watermark.
+  It ALSO surfaces `overlaySizePercent` on each node — an OPEN overlay's size (`session.overlayActive ? session.overlaySizePercent : nil`
+  in the tree builder): nil/omitted = the full-pane overlay OR no overlay (so gate on `overlay` first),
+  else the floating panel's percent (1...100).
+  It is the READ side of `session.overlay.resize` (which had only the write side), so a tmux-style zoom
+  script can record the current size before switching to `--full` and restore the EXACT original on un-zoom
+  (not a guessed default).
   `tree` ALSO carries, at the TOP level (alongside `idleMs`/`autoFollowMs`), `sidebarVisible` — the read
   side of the write-only `sidebar` command (per-window sidebar visibility), populated LIVE from the
   projected window's store in `AppStore.controlTree`.
