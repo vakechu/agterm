@@ -395,6 +395,10 @@ final class ControlServer {
     /// active workspace (the one owning the selected session).
     func buildTree(in store: AppStore) -> ControlTree {
         let shellBasename = ProcessInfo.processInfo.environment["SHELL"].map(CommandRestore.basename)
+        // the projected window owns its quick terminal; find its id by store identity to read the live
+        // QuickTerminalController.isVisible (a nil controller — never opened, or the window is tearing
+        // down — reads as not visible).
+        let windowID = library.openIDs().first { library.store(for: $0) === store }
         return store.controlTree(
             foreground: { session in
                 (session.surface as? GhosttySurfaceView).flatMap {
@@ -405,7 +409,8 @@ final class ControlServer {
                 (session.splitSurface as? GhosttySurfaceView).flatMap {
                     ForegroundProcess.command(for: $0, shellBasename: shellBasename)
                 }
-            }
+            },
+            quickVisible: { windowID.flatMap { QuickTerminalRegistry.shared.controller(for: $0)?.isVisible } ?? false }
         )
     }
 

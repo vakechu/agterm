@@ -42,7 +42,10 @@ when none reported; distinct from `name`, the derived sidebar label), `active` (
 `split` (split shown), `splitRatio` (the left-pane fraction 0.05–0.95 of a session that HAS a split —
 shown or hidden; omitted when there's no split or the ratio was never explicitly set (divider at the
 default 0.5) — the read side
-of `session resize`, record it to restore the exact divider position), `overlay` (overlay shown),
+of `session resize`, record it to restore the exact divider position),
+`splitFocused` (which pane holds focus in a session that HAS a split — `true` = the split/right pane,
+`false` = the main/left pane; omitted when there's no split; the read side of `session focus`, record it
+to restore focus via `session focus --pane left|right`), `overlay` (overlay shown),
 `overlaySizePercent` (an open overlay's size — the
 floating panel's percent of the pane, 1–100; omitted = a full-pane overlay or no overlay, so gate on
 `overlay` first; the read side of `session overlay resize`, e.g. record it before switching to `--full`
@@ -50,7 +53,10 @@ to restore the exact size), `scratch` (scratch shown), `flagged` (in the
 flagged working-set), `status` (the agent-status — `active`|`completed`|`blocked` — omitted when
 idle), `statusPane` (which pane set that status — `left` (main) | `right` (split) | `scratch` — the
 `--pane` value from `session status`, omitted when unset or idle; gated on the same non-idle condition
-as `status`, so it is never reported without a `status`), `foreground`/`splitForeground` (the live argv of each pane's foreground
+as `status`, so it is never reported without a `status`), `statusBlink` (`true` when the status glyph is
+set to blink — the `--blink` value; omitted when idle or not blinking) and `statusColor` (the `#rrggbb`
+glyph-tint override — the `--color` value; omitted when idle or using the default color),
+`foreground`/`splitForeground` (the live argv of each pane's foreground
 process — what it is running — omitted when the pane sits at its shell prompt), and `background` (the
 background spec set via `session background` — a `{kind, text?, imagePath?, colorHex?, opacity?, fit?,
 position?, repeats?}` object; `kind` is `image`/`text`/`color` — omitted when none is set), and `unseen`
@@ -59,15 +65,17 @@ when zero). Workspace nodes carry `id`, `name`, `active`, `sessions`, and `focus
 tree is collapsed to this workspace — the read side of `workspace focus`, distinct from `active` the
 SELECTED workspace; omitted unless this is the focused one, and absent entirely when nothing is focused).
 
-The tree object itself carries four top-level read-only fields: `idleMs` (milliseconds since the last
+The tree object itself carries five top-level read-only fields: `idleMs` (milliseconds since the last
 user input in the window, omitted before any activity), `autoFollowMs` (the window's Auto-follow
 timeout in milliseconds, omitted when the setting is Disabled), `sidebarVisible` (whether the
 window's sidebar is currently shown — the read side of the write-only `sidebar` command, so a script
 can restore it, e.g. a tmux-style zoom that hides the sidebar and must re-show it only when it was
-visible before), and `sidebarMode` (`tree` or `flagged` — the sidebar view mode, the read side of
-`sidebar mode`). `idleMs` is live and grows while the window is idle, so it is on `tree` only, never
-`window.list`; `sidebarVisible` is on both; `sidebarMode` is `tree`-only (a GUI flagged-view toggle
-would leave a cached copy stale). All four are read-only projections of GUI state.
+visible before), `sidebarMode` (`tree` or `flagged` — the sidebar view mode, the read side of
+`sidebar mode`), and `quickVisible` (whether the window's quick terminal is currently shown — the read
+side of the write-only `quick` command, so a script can make the toggle idempotent). `idleMs` is live
+and grows while the window is idle, so it is on `tree` only, never `window.list`; `sidebarVisible` is on
+both; `sidebarMode` and `quickVisible` are `tree`-only (a GUI toggle would leave a cached copy stale).
+All five are read-only projections of GUI state.
 
 ## workspace
 

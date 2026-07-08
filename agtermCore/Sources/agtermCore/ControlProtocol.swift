@@ -261,6 +261,11 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
     /// — record it before maximizing a pane so a script can restore the exact divider position (the applied
     /// ratio is otherwise echoed only on the `session.resize` call itself).
     public let splitRatio: Double?
+    /// For a session that HAS a split pane (shown or hidden), which pane holds keyboard focus: `true` = the
+    /// split (right) pane, `false` = the main (left) pane; nil when the session has no split (omitted from
+    /// the JSON). The read side of `session.focus` — record which pane was focused so a script can restore
+    /// it via `session.focus --pane left|right`.
+    public let splitFocused: Bool?
     public let overlay: Bool
     /// For an OPEN overlay (`overlay == true`), its size: nil/omitted = the FULL-pane overlay, else the
     /// floating panel's percent of the pane (1...100). Absent when no overlay is open. The read side of
@@ -280,6 +285,12 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
     /// Which pane set the session's agent status (`"left"|"right"|"scratch"`, `left`=main, `right`=split),
     /// or nil when idle or unspecified (omitted from the JSON). The read side of `session.status --pane`.
     public let statusPane: String?
+    /// Whether the session's agent status glyph is set to blink (pulse for attention), or nil when idle or
+    /// not blinking (omitted from the JSON). The read side of `session.status --blink`.
+    public let statusBlink: Bool?
+    /// The per-call `#rrggbb` glyph-tint override for the session's agent status, or nil when idle or using
+    /// the Settings-configured status color (omitted from the JSON). The read side of `session.status --color`.
+    public let statusColor: String?
     /// The session's background watermark spec, or nil when none is set (omitted from the JSON). The read
     /// side of `session.background` — set/clear/query symmetry, so a script can inspect the current watermark.
     public let background: BackgroundWatermark?
@@ -289,10 +300,11 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
     public let unseen: Int?
 
     public init(id: String, name: String, cwd: String, title: String? = nil, active: Bool, split: Bool,
-                splitRatio: Double? = nil,
+                splitRatio: Double? = nil, splitFocused: Bool? = nil,
                 overlay: Bool = false, overlaySizePercent: Int? = nil, scratch: Bool = false, flagged: Bool = false,
                 foreground: [String]? = nil, splitForeground: [String]? = nil, status: String? = nil,
-                statusPane: String? = nil, background: BackgroundWatermark? = nil, unseen: Int? = nil) {
+                statusPane: String? = nil, statusBlink: Bool? = nil, statusColor: String? = nil,
+                background: BackgroundWatermark? = nil, unseen: Int? = nil) {
         self.id = id
         self.name = name
         self.cwd = cwd
@@ -300,6 +312,7 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
         self.active = active
         self.split = split
         self.splitRatio = splitRatio
+        self.splitFocused = splitFocused
         self.overlay = overlay
         self.overlaySizePercent = overlaySizePercent
         self.scratch = scratch
@@ -308,6 +321,8 @@ public struct ControlSessionNode: Codable, Sendable, Equatable {
         self.splitForeground = splitForeground
         self.status = status
         self.statusPane = statusPane
+        self.statusBlink = statusBlink
+        self.statusColor = statusColor
         self.background = background
         self.unseen = unseen
     }
@@ -359,14 +374,21 @@ public struct ControlTree: Codable, Sendable, Equatable {
     /// mode and restore it. `tree`-only (not on `window.list`), since a GUI-only flagged-view toggle would
     /// leave a cached copy stale — read the live tree copy instead.
     public let sidebarMode: String?
+    /// Whether the projected window's quick terminal is currently visible. LIVE — resolved app-side per
+    /// request from the window's `QuickTerminalController` — so a script can make the `quick` toggle
+    /// idempotent (show only when hidden). The read side of the write-only `quick` command. `tree`-only
+    /// (not on `window.list`), since a GUI-only ⌃` toggle bypasses the command path and would leave a
+    /// cached copy stale — read the live tree copy instead. nil in a host-produced tree with no app closure.
+    public let quickVisible: Bool?
 
     public init(workspaces: [ControlWorkspaceNode], idleMs: Int? = nil, autoFollowMs: Int? = nil,
-                sidebarVisible: Bool? = nil, sidebarMode: String? = nil) {
+                sidebarVisible: Bool? = nil, sidebarMode: String? = nil, quickVisible: Bool? = nil) {
         self.workspaces = workspaces
         self.idleMs = idleMs
         self.autoFollowMs = autoFollowMs
         self.sidebarVisible = sidebarVisible
         self.sidebarMode = sidebarMode
+        self.quickVisible = quickVisible
     }
 }
 

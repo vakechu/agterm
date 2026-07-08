@@ -66,8 +66,12 @@ paths:
   The read field is populated in `AppStore.controlTree` and, like the other optionals, omitted from the
   JSON when nil.
   Existing pairs to mirror: `session.background`/`background`, `notify`+`session.seen`/`unseen`,
-  `session.status`/`status`+`statusPane`, `session.flag`/`flagged`, `sidebar`/`sidebarVisible` (top-level),
-  `session.overlay.resize`/`overlaySizePercent`.
+  `session.status`/`status`+`statusPane` (+`statusBlink`/`statusColor` for `--blink`/`--color`),
+  `session.flag`/`flagged`, `session.focus`/`splitFocused`, `session.resize`/`splitRatio`,
+  `session.overlay.resize`/`overlaySizePercent`, `sidebar`/`sidebarVisible` (top-level),
+  `sidebar.mode`/`sidebarMode`, `workspace.focus`/`focused` (workspace node), `quick`/`quickVisible` (top-level),
+  `window.move`+`window.resize`/`geometry`, `window.fullscreen`+`window.zoom`/`fullscreen`+`zoomed`
+  (the last three on `window.list`).
   This is a SEPARATE obligation from the four-point audit (Command + arg + CLI + tests) and easy to forget:
   `session.overlay.resize` shipped write-only and `overlaySizePercent` was added only later, when a
   tmux-zoom script needed to restore an overlay's exact size.
@@ -269,6 +273,8 @@ paths:
   shown side-by-side or hidden — when hidden, focusing a pane swaps which one shows maximized),
   drives `AppActions.setSplitFocus(_:of:)`, and is the control half of the ⌘⌥←/→ keyboard nav + the "Focus
   Left/Right Pane" menu/palette items.
+  Its READ side is `ControlSessionNode.splitFocused` (`true`=split/right, `false`=main/left, nil=no split;
+  see the `tree` read-side fields below), so a script can record the focused pane and restore it.
   `session.resize` moves the split DIVIDER — it is control-NATIVE (the divider is otherwise mouse-drag
   only; NO GUI/menu/keymap action, so a key is bound by mapping a `command "agtermctl session resize …"`
   custom action).
@@ -564,6 +570,14 @@ paths:
   tree schema — so a script can record an overlay's size before zooming to `--full` and restore it exactly.
   Mode-bearing commands (`session.split`/`quick`) compute the delta against current state so `on`/`off`/`show`/`hide`
   are idempotent, and an unknown mode is an error.
+  `quick`'s visibility reads back on `ControlTree.quickVisible` at the tree TOP level — LIVE, resolved
+  app-side in `buildTree` from the projected window's `QuickTerminalController.isVisible` (the window id
+  found by store identity, `library.openIDs().first { library.store(for:) === store }`, since the quick
+  terminal is per-window); `tree`-only like `sidebarMode` (the GUI ⌃` toggle bypasses the command path, so
+  a cached `window.list` copy would go stale), so a script can make the `quick` toggle idempotent.
+  Threaded as a `quickVisible: () -> Bool?` closure on `AppStore.controlTree` (defaulting nil for host-free
+  tests), covered by `treeRoundTripsWithQuickVisible`/`treeOmitsQuickVisibleWhenNil` +
+  `AppStoreTests.controlTreeReportsQuickVisibleFromClosure`; the app-side `QuickTerminalRegistry` read is build-verified.
   `session.status` flags a per-session agent status on the sidebar row — `args.status` is `idle`|`active`|`completed`|`blocked`
   (`AgentStatus(rawValue:)` → an `invalid status` error on anything else),
   `args.blink` pulses the glyph, and `args.autoReset` (status-agnostic, caller-set,
@@ -629,6 +643,10 @@ paths:
   (see the Menu/actions rule).
   It reads back on each `tree` node as `ControlSessionNode.statusPane` (omitted when nil, gated on the SAME
   non-idle condition as `status` so an idle node reports neither).
+  The `--blink` flag and `--color` override read back the same way — `ControlSessionNode.statusBlink`
+  (`true` when blinking, omitted otherwise) and `statusColor` (the `#rrggbb`, omitted when using the default
+  color), both populated in the tree builder gated on the SAME non-idle condition — so a script can record
+  the FULL status (state + pane + blink + color) and restore it.
   Four-point keep-in-sync audit for `session.status --pane`: (1) the `StatusPane` enum + `AgentIndicator.statusPane`
   + `AgentIndicator.clearedBy(pane:isEscape:)` + `ControlSessionStatusUpdate.pane` + `ControlSessionNode.statusPane`
   + `SurfaceEnvironment.session(pane:)` (injects `AGTERM_PANE`) in `agtermCore`, plus the dispatcher `StatusPane`
@@ -811,6 +829,12 @@ paths:
   It is the READ side of `session.resize` (whose applied ratio was echoed ONLY on the resize call's own
   `ControlResult.ratio`), so a script can record the current ratio before maximizing a pane and restore the
   exact divider even if the USER dragged it.
+  It ALSO surfaces `splitFocused` on each node — which pane holds focus in a session that HAS a split
+  (`session.hasSplit ? session.splitFocused : nil` in the tree builder, so shown OR hidden splits report it):
+  `true` = the split (right) pane, `false` = the main (left) pane, nil/omitted when there is no split.
+  It is the READ side of `session.focus` (write-only), so a script can record which pane was focused and
+  restore it via `session.focus --pane left|right` (a `false` is emitted, distinct from the nil no-split
+  case — the left pane being focused is real state).
   `tree` ALSO carries, at the TOP level (alongside `idleMs`/`autoFollowMs`), `sidebarVisible` — the read
   side of the write-only `sidebar` command (per-window sidebar visibility), populated LIVE from the
   projected window's store in `AppStore.controlTree`.
