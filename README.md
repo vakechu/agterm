@@ -23,6 +23,10 @@ For the real terminal work, rendering, VT parsing, and shell I/O, `agterm` embed
 <details>
 <summary>More screenshots</summary>
 
+The dashboard: several sessions' live output in one view-only grid, watched at once. A single click drops into any of them:
+
+![Dashboard](docs/screenshots/dashboard.png)
+
 An agent's interactive prompt mid-session, with attention glyphs on the sessions that need you:
 
 ![Agent prompt](docs/screenshots/agent-prompt.png)
