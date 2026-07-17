@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.15.0 - 2026-07-17
+
+### New Features
+
+- a new Interface tab in Settings to hide or show individual title-bar and sidebar-footer chrome elements (the sidebar toggle, the session and window names, the recent-sessions, scratch, split, dashboard, and quick-terminal buttons, and the new-workspace, new-session, and flagged-view footer buttons), each shown by default #241 @umputun
+- a Duplicate Session action, reachable from the sidebar context menu, the menu bar, the action palette, a keybinding, and the control API #234 @dimetron
+- per-pane OSC 11 dynamic background under window translucency, so a program that sets its own background color tints just its pane instead of staying hidden behind the window backing #240 @umputun
+- closing the active session now returns to the previously-active session instead of the next one in the list #231 @olomix
+- an optional notification sound on a delivered banner, off by default, chosen in Settings ▸ Notifications #232 @ZUBOV-ILLIA
+- an inline `+` button on each workspace row to create a new session in that workspace #233 @wievtsal
+
+### Bug Fixes
+
+- make the site navigation responsive on mobile #229 @Hormold
+
 ## v0.14.1 - 2026-07-15
 
 ### Bug Fixes
