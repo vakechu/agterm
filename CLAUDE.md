@@ -134,6 +134,12 @@ The app must build, `swift test` must stay green, and `make lint` must pass afte
   `claude --worktree <name>`), never a manual `git worktree add` (global rule), then do the artifact
   SYMLINK setup in the next bullet BEFORE building (a fresh worktree lacks the gitignored
   `GhosttyKit.xcframework` / `agterm/Resources/{ghostty,terminfo}`).
+  **Before creating the worktree, `git fetch origin master` so it forks the CURRENT remote tip, not a
+  stale local `origin/master`.**
+  `EnterWorktree`'s `fresh` base is the LOCAL `origin/master` ref, which goes stale when the remote
+  advances during a long session; forking from a stale base means the PR conflicts at merge time against
+  whatever landed meanwhile (this bit once — a worktree forked 5 commits behind and had to
+  rebase-and-resolve against a merged PR that touched the same `session.new` command).
   AFTER the PR merges, remove the worktree (`git worktree remove --force <wt>`, or `ExitWorktree`),
   which drops the worktree + its symlinks without touching the main repo's artifacts.
   Cleanup must NEVER switch the main checkout's branch (the user may be working there in another window),
